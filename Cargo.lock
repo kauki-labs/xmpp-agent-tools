@@ -2465,6 +2465,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
+ "xmpp-agent",
  "xmpp-agent-acp",
  "xmpp-agent-approvals",
  "xmpp-agent-client",
