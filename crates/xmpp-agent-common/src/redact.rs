@@ -464,4 +464,104 @@ mod tests {
             assert!(describe(name, json!({})).starts_with(name));
         }
     }
+
+    // Beyond the Python tests: exact output per tool, written to kill the mutants `cargo mutants` found in the 1:1 port.
+
+    #[test]
+    fn describe_tool_should_format_each_known_tool_when_the_input_is_complete() {
+        let cases = [
+            (
+                "Bash",
+                json!({"command": "ls", "description": "List"}),
+                "Bash: ls (List)",
+            ),
+            ("Bash", json!({"command": "ls"}), "Bash: ls"),
+            (
+                "Write",
+                json!({"file_path": "/a", "content": "héllo"}),
+                "Write /a (5 chars)",
+            ),
+            (
+                "Edit",
+                json!({"file_path": "/a", "old_string": "ab", "new_string": "c"}),
+                "Edit /a (replace 2 chars with 1 chars)",
+            ),
+            (
+                "MultiEdit",
+                json!({"file_path": "/a", "edits": [{}, {}]}),
+                "MultiEdit /a (2 edits)",
+            ),
+            (
+                "MultiEdit",
+                json!({"file_path": "/a", "edits": "no"}),
+                "MultiEdit /a (0 edits)",
+            ),
+            (
+                "NotebookEdit",
+                json!({"notebook_path": "/n.ipynb"}),
+                "NotebookEdit /n.ipynb",
+            ),
+            ("Read", json!({"file_path": "/a"}), "Read /a"),
+            (
+                "Glob",
+                json!({"pattern": "*.rs", "path": "src"}),
+                "Glob *.rs in src",
+            ),
+            ("Glob", json!({"pattern": "*.rs"}), "Glob *.rs"),
+            (
+                "Grep",
+                json!({"pattern": "x", "path": "src"}),
+                "Grep x in src",
+            ),
+            ("Grep", json!({"pattern": "x"}), "Grep x"),
+            (
+                "WebFetch",
+                json!({"url": "https://example.com"}),
+                "WebFetch https://example.com",
+            ),
+            ("WebSearch", json!({"query": "rust"}), "WebSearch rust"),
+        ];
+        for (name, input, expected) in cases {
+            assert_eq!(describe(name, input), expected);
+        }
+    }
+
+    #[test]
+    fn describe_tool_should_skip_the_description_when_it_is_empty_or_zero_or_null() {
+        for empty in [
+            json!(""),
+            json!(0),
+            json!(0.0),
+            json!(false),
+            json!(null),
+            json!([]),
+            json!({}),
+        ] {
+            assert_eq!(
+                describe("Bash", json!({"command": "ls", "description": empty})),
+                "Bash: ls"
+            );
+        }
+        for set in [
+            json!("x"),
+            json!(1),
+            json!(true),
+            json!([1]),
+            json!({"a": 1}),
+        ] {
+            assert!(describe("Bash", json!({"command": "ls", "description": set})).contains(" ("));
+        }
+    }
+
+    #[test]
+    fn describe_tool_should_write_json_like_python_when_an_argument_is_nested() {
+        let out = describe("t", json!({"a": [1, "b"], "c": {"d": null, "e": 2.5}}));
+        assert_eq!(out, r#"t a=[1, "b"], c={"d": null, "e": 2.5}"#);
+    }
+
+    #[test]
+    fn describe_tool_should_strip_trailing_whitespace_when_the_tool_is_unknown() {
+        assert_eq!(describe("t", json!({})), "t");
+        assert_eq!(describe("t", json!({"a": "x\u{1f}"})), "t a=x");
+    }
 }
