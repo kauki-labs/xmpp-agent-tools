@@ -38,7 +38,8 @@ jobs:
         run: |
           # An unknown base (a manual run) classifies as "everything changed".
           if [ -n "$BASE_SHA" ] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
-            git diff --name-only "$BASE_SHA" "$HEAD_SHA" | python3 ci/changes.py
+            # No rename detection (a renamed file lists both names) and no path quoting (a quoted name does not end in `.rs`).
+            git -c core.quotePath=false diff --no-renames --name-only "$BASE_SHA" "$HEAD_SHA" | python3 ci/changes.py
           else
             : | python3 ci/changes.py
           fi
@@ -91,14 +92,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install the toolchain pinned in rust-toolchain.toml
-        run: rustup show active-toolchain || rustup toolchain install
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # The owner adds the Nix binary cache step here later (the sandy repo uses cache-nix-action, pinned by SHA).
+      # - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
       - name: Format
-        run: cargo fmt --check
+        run: nix build -L .#checks.x86_64-linux.fmt
       - name: Clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: nix build -L .#checks.x86_64-linux.clippy
       - name: Unit tests
-        run: cargo test --locked
+        run: nix build -L .#checks.x86_64-linux.test
 
   scrub:
     name: scrub
