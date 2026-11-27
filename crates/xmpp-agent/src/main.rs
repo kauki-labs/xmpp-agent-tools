@@ -56,6 +56,22 @@ fn load_settings(args: &Args) -> Result<Settings, String> {
     Settings::load(file.as_deref(), &read_env(), &read_password_file).map_err(|e| e.to_string())
 }
 
+/// Ctrl-C, or SIGTERM where there is one (a service manager stops a service with it).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        if let Ok(mut terminate) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = terminate.recv() => {}
+            }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
+}
+
 async fn serve<C: Chat, L: Log>(
     settings: Settings,
     chat: C,
@@ -66,7 +82,7 @@ async fn serve<C: Chat, L: Log>(
     session.start().await.map_err(|e| e.to_string())?;
     let outcome = tokio::select! {
         outcome = session.run(&mut events) => outcome.map_err(|e| e.to_string()),
-        _ = tokio::signal::ctrl_c() => Ok(()),
+        () = shutdown_signal() => Ok(()),
     };
     session.shutdown().await;
     outcome
@@ -100,6 +116,10 @@ fn main() -> ExitCode {
         }
     };
     if args.check_config {
+        if !settings.cwd.is_dir() {
+            eprintln!("error: cwd: {} is not a directory", settings.cwd.display());
+            return ExitCode::from(EXIT_CONFIG);
+        }
         println!("config ok");
         return ExitCode::SUCCESS;
     }

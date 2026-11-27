@@ -13,7 +13,7 @@ and assigning rooms that only higher entities receive.
 | `xmpp_agent_common` | `redact`: secrets and long values never reach chat | built |
 | `xmpp_agent_client` | `router` (chat message to prompt or command), `approvals` (tool approvals and dialogs answered in chat) | built |
 | `xmpp_agent_client` | ACP harness adapter, XMPP layer, session loop | planned |
-| `xmpp-agent` | the session loop (DM mode): a human on XMPP and one agent over ACP | built, tested |
+| `xmpp-agent` | the session loop (DM mode): a human on XMPP and one agent over ACP | built, tested; never run against a real server or model |
 | `xmpp_agent_mcp` | room tools behind a capability gate, directory and guide tools | planned |
 
 ## Develop

@@ -13,6 +13,12 @@ pub const DEFAULT_APPROVAL_TIMEOUT_SECS: u64 = 600;
 /// Longest approval timeout accepted, in seconds (one day).
 pub const MAX_APPROVAL_TIMEOUT_SECS: u64 = 86_400;
 
+/// Environment variables with a secret. The agent's process does not get them: it runs under `env -u`.
+pub const SECRET_ENV: [&str; 2] = ["XAT_PASSWORD", "XAT_PASSWORD_FILE"];
+
+/// Longest start timeout accepted, in seconds.
+pub const MAX_AGENT_START_TIMEOUT_SECS: u64 = 600;
+
 /// Default time the agent has to open a session, in seconds.
 pub const DEFAULT_AGENT_START_TIMEOUT_SECS: u64 = 60;
 
@@ -235,6 +241,9 @@ impl Settings {
             (None, Some(list)) => bare_list("approvers", list)?,
             (None, None) => allowed.clone(),
         };
+        if approvers.is_empty() {
+            return Err(invalid("approvers", "must not be empty"));
+        }
 
         let password = match set(&env.password) {
             Some(password) => password,
@@ -264,6 +273,16 @@ impl Settings {
             return Err(invalid(
                 "approval_timeout_secs",
                 &format!("must be between 1 and {MAX_APPROVAL_TIMEOUT_SECS}"),
+            ));
+        }
+
+        let start_timeout_secs = raw
+            .agent_start_timeout_secs
+            .unwrap_or(DEFAULT_AGENT_START_TIMEOUT_SECS);
+        if !(1..=MAX_AGENT_START_TIMEOUT_SECS).contains(&start_timeout_secs) {
+            return Err(invalid(
+                "agent_start_timeout_secs",
+                &format!("must be between 1 and {MAX_AGENT_START_TIMEOUT_SECS}"),
             ));
         }
 
@@ -304,7 +323,7 @@ impl Settings {
             allowed,
             approvers,
             approval_timeout: Duration::from_secs(timeout_secs),
-            agent_start_timeout: Duration::from_secs(DEFAULT_AGENT_START_TIMEOUT_SECS),
+            agent_start_timeout: Duration::from_secs(start_timeout_secs),
             log_path: set(&env.log_path)
                 .or_else(|| raw.log_path.clone())
                 .map(PathBuf::from),
@@ -313,9 +332,15 @@ impl Settings {
 
     /// How to start the agent.
     pub fn spawn_config(&self) -> SpawnConfig {
+        let mut args: Vec<String> = SECRET_ENV
+            .iter()
+            .flat_map(|name| ["-u".to_owned(), (*name).to_owned()])
+            .collect();
+        args.push(self.agent_command.clone());
+        args.extend(self.agent_args.iter().cloned());
         SpawnConfig {
-            command: self.agent_command.clone(),
-            args: self.agent_args.clone(),
+            command: "env".to_owned(),
+            args,
             env: vec![("CLAUDE_CODE_ENTRYPOINT".to_owned(), self.entrypoint.clone())],
             cwd: self.cwd.clone(),
         }

@@ -15,10 +15,15 @@ name = "xmpp-agent"
 path = "src/main.rs"
 
 # The scripted ACP agent of xmpp-agent-acp, built here so the end-to-end tests have its path; it is not part of the API.
+# Behind a feature that only the tests turn on, so a release build and `cargo install` do not ship it.
 [[bin]]
 name = "loop-fake-agent"
 path = "../xmpp-agent-acp/tests/support/fake_agent.rs"
 test = false
+required-features = ["test-agent"]
+
+[features]
+test-agent = []
 
 [dependencies]
 clap.workspace = true
@@ -34,3 +39,4 @@ xmpp-agent-xmpp = { path = "../xmpp-agent-xmpp" }
 
 [dev-dependencies]
 rstest.workspace = true
+xmpp-agent = { path = ".", features = ["test-agent"] }

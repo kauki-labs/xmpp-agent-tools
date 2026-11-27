@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tokio::time::{Instant, MissedTickBehavior, interval, timeout_at};
+use tokio::time::{Instant, MissedTickBehavior, interval, timeout, timeout_at};
 use xmpp_agent_acp::{AcpSession, AgentEvent, Error as AcpError, PermOption, SpawnConfig};
 use xmpp_agent_approvals::{
     Behavior, Broker, DEFAULT_MAX_PENDING, DENY_MESSAGE, Decision, Reason as ApprovalReason,
@@ -23,8 +23,8 @@ use xmpp_agent_xmpp::Event;
 use crate::chat::Chat;
 use crate::config::Settings;
 use crate::format::{
-    HELP, blocked_prompt, denied_prompt, pick_option, rejection_text, status_text, tool_line,
-    turn_messages,
+    HELP, blocked_prompt, denied_prompt, display_tool, honest_approval_text, pick_option,
+    rejection_text, status_text, tool_line, turn_messages,
 };
 use crate::log::{ERROR_MAX_CHARS, Log, LogEvent};
 
@@ -146,7 +146,7 @@ impl<C: Chat, L: Log> Session<C, L> {
         self.log.record(&LogEvent::Started);
         self.spawn_agent()
             .await
-            .map_err(|e| SessionError::Agent(clean(&e.to_string())))
+            .map_err(|e| SessionError::Agent(clean(&e)))
     }
 
     /// Serve chat events until the channel closes (`Ok`) or the connection ends for good (`Err`).
@@ -185,8 +185,20 @@ impl<C: Chat, L: Log> Session<C, L> {
         self.log.record(&LogEvent::Stopped);
     }
 
-    async fn spawn_agent(&mut self) -> Result<(), AcpError> {
-        let (agent, events) = AcpSession::spawn(self.spawn.clone()).await?;
+    /// Start an agent session. An agent that hangs before it opens one must not freeze the loop, so the start has a time limit.
+    async fn spawn_agent(&mut self) -> Result<(), String> {
+        let limit = self.settings.agent_start_timeout;
+        let started = match timeout(limit, AcpSession::spawn(self.spawn.clone())).await {
+            Ok(Ok(started)) => started,
+            Ok(Err(error)) => return Err(error.to_string()),
+            Err(_) => {
+                return Err(format!(
+                    "the agent did not open a session; timed out after {} s",
+                    limit.as_secs()
+                ));
+            }
+        };
+        let (agent, events) = started;
         self.log.record(&LogEvent::AgentStarted {
             session_id: agent.session_id().to_owned(),
         });
@@ -245,32 +257,47 @@ impl<C: Chat, L: Log> Session<C, L> {
 
     async fn on_message(&mut self, from: &str, body: &str) {
         let sender = bare(from);
-        if !self.settings.allowed.contains(&sender) {
+        let may_talk = self.settings.allowed.contains(&sender);
+        if !may_talk && !self.settings.approvers.contains(&sender) {
             self.log.record(&LogEvent::IgnoredSender { from: sender });
             return;
         }
-        if !self.broker().pending(None).is_empty() {
-            let reply = self.broker().handle_reply(&sender, CONTEXT, body);
-            match reply.kind {
-                ReplyKind::NotAReply => {}
-                ReplyKind::Decided | ReplyKind::Next => {
-                    if !reply.notice.is_empty() {
-                        self.say(&sender, &reply.notice).await;
-                    }
-                    if let Some(decision) = reply.decision {
-                        self.apply(decision).await;
-                    }
-                    return;
+        // An approver may answer approvals without being allowed to talk to the agent. The broker decides who counts.
+        let reply = self.broker().handle_reply(&sender, CONTEXT, body);
+        match reply.kind {
+            ReplyKind::NotAReply if may_talk => {}
+            ReplyKind::NotAReply => {
+                self.log.record(&LogEvent::IgnoredSender { from: sender });
+                return;
+            }
+            ReplyKind::Decided | ReplyKind::Next => {
+                // The confirmation of a decision is in the decision's notice, that of a question step in the reply's.
+                let notice = match &reply.decision {
+                    Some(decision) if reply.notice.is_empty() => decision.notice.clone(),
+                    _ => reply.notice.clone(),
+                };
+                if !notice.is_empty() {
+                    self.say(&sender, &honest_approval_text(&notice)).await;
                 }
-                ReplyKind::Forbidden
-                | ReplyKind::UnknownRequest
-                | ReplyKind::Ambiguous
-                | ReplyKind::Invalid => {
-                    if !reply.notice.is_empty() {
-                        self.say(&sender, &reply.notice).await;
-                    }
-                    return;
+                if let Some(decision) = reply.decision {
+                    self.apply(decision).await;
                 }
+                return;
+            }
+            ReplyKind::Forbidden => {
+                let notice = if reply.notice.is_empty() {
+                    "Only an approver can answer an approval request.".to_owned()
+                } else {
+                    reply.notice
+                };
+                self.say(&sender, &notice).await;
+                return;
+            }
+            ReplyKind::UnknownRequest | ReplyKind::Ambiguous | ReplyKind::Invalid => {
+                if !reply.notice.is_empty() {
+                    self.say(&sender, &reply.notice).await;
+                }
+                return;
             }
         }
         let routed = {
@@ -292,13 +319,15 @@ impl<C: Chat, L: Log> Session<C, L> {
     async fn local(&mut self, sender: &str, command: &Local) {
         match command.name.as_str() {
             "new" => self.new_session(sender).await,
-            "stop" => match &self.agent {
+            "stop" => match self.agent.clone() {
                 Some(agent) if self.turns_open > 0 => {
                     if let Err(error) = agent.cancel().await {
                         self.log.record(&LogEvent::Error {
                             what: format!("cancel failed: {error}"),
                         });
                     }
+                    // A request that waits would otherwise time out later and restart the work the human just stopped.
+                    self.cancel_approvals().await;
                 }
                 _ => self.say(sender, "Nothing to stop.").await,
             },
@@ -355,7 +384,7 @@ impl<C: Chat, L: Log> Session<C, L> {
         match self.spawn_agent().await {
             Ok(()) => self.say(sender, "New session started.").await,
             Err(error) => {
-                let text = clean(&error.to_string());
+                let text = clean(&error);
                 self.log.record(&LogEvent::Error {
                     what: format!("agent did not start: {text}"),
                 });
@@ -367,6 +396,19 @@ impl<C: Chat, L: Log> Session<C, L> {
                 .await;
             }
         }
+    }
+
+    /// Close every waiting approval and answer the agent "cancelled". Used by `/stop`; the agent is alive.
+    async fn cancel_approvals(&mut self) {
+        let closed = self.broker().close();
+        for decision in closed {
+            if let Some(waiting) = self.waiting.remove(&decision.request.request_id) {
+                self.log_decision(&decision, &waiting.tool);
+                self.answer_agent(waiting.acp_id, None).await;
+            }
+        }
+        self.waiting.clear();
+        self.broker().forget(CONTEXT);
     }
 
     /// Deny what waits without answering the agent: it is gone or about to be.
@@ -415,7 +457,10 @@ impl<C: Chat, L: Log> Session<C, L> {
                     for message in turn_messages(&text, &stop_reason) {
                         self.say(&to, &message).await;
                     }
-                    self.typing(&to, "active").await;
+                    // Typing goes on while a queued prompt still has a turn open.
+                    if self.turns_open == 0 {
+                        self.typing(&to, "active").await;
+                    }
                 }
             }
             Some(AgentEvent::Thought(_) | AgentEvent::ToolUpdate { .. }) => {}
@@ -423,6 +468,7 @@ impl<C: Chat, L: Log> Session<C, L> {
     }
 
     async fn on_permission(&mut self, acp_id: u64, tool: String, options: Vec<PermOption>) {
+        let tool = display_tool(&tool);
         // The event carries no raw input, so the broker sees an empty one.
         let submitted = self
             .broker()
@@ -467,6 +513,7 @@ impl<C: Chat, L: Log> Session<C, L> {
                 options,
             },
         );
+        let text = honest_approval_text(&text);
         for approver in self.settings.approvers.clone() {
             self.say(&approver, &text).await;
         }

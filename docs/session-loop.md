@@ -12,7 +12,8 @@ xmpp-agent --version
 ```
 
 Exit codes: 0 clean stop, 1 a runtime failure (login refused, connection ended for good, the agent did not start), 2 a config that
-cannot be used.
+cannot be used. `--check-config` also checks that `cwd` is a directory; it does not check that the agent command exists. Ctrl-C and
+SIGTERM stop the loop, deny what waits and stop the agent.
 
 ## Config
 
@@ -28,8 +29,9 @@ refused. The password comes from `XAT_PASSWORD`, or from the file named by `pass
 | `entrypoint` | | `sandy`: the value of `CLAUDE_CODE_ENTRYPOINT` in the agent's environment |
 | `cwd` | `XAT_CWD` | `.` |
 | `allowed` (bare JIDs) | `XAT_ALLOWED` (comma or space separated) | required |
-| `approvers` (bare JIDs) | `XAT_APPROVERS` | the allowed JIDs |
+| `approvers` (bare JIDs, not empty) | `XAT_APPROVERS` | the allowed JIDs. An approver need not be allowed: they can only answer approvals |
 | `approval_timeout_secs` | `XAT_APPROVAL_TIMEOUT_SECS` | 600, from 1 to 86400 |
+| `agent_start_timeout_secs` | | 60, from 1 to 600: the time the agent has to open a session, at start and on `/new` |
 | `log_path` | `XAT_LOG_PATH` | no log |
 
 ## Behaviour
@@ -39,11 +41,17 @@ refused. The password comes from `XAT_PASSWORD`, or from the file named by `pass
   goes to it as text, anything else gets a one-line reply.
 - The agent's text arrives as one message per turn, split at 3000 characters on a line boundary, plus one redacted line per tool call.
   Tool output and thoughts are never sent. A typing indication runs while the agent works.
-- A permission request goes to the approvers with numbered options. Only an approver's real bare JID answers. A timeout denies it, and
+- A permission request goes to the approvers with numbered options. Only an approver's real bare JID answers; the broker's grammar
+  also takes plain "yes", "ok" or "no" from an approver while a request waits. `/stop` cancels a waiting request and answers the agent
+  "cancelled". A timeout denies it, and
   a queued prompt tells the agent the step is blocked on a human so it can do independent work (docs/experiments.md E15). Answer 4 with a
   note passes the note to the agent.
-- Answer 2 ("allow this exact call again") behaves as allow once: the ACP permission event carries no raw input, so the loop cannot
-  tell that a later call is the same one.
-- A dead agent is reported once; prompts are ignored until `/new`. A reconnect of the XMPP layer is silent.
+- Answer 2 ("allow this exact call again") behaves as allow once, and the chat says so: the ACP permission event carries no raw input,
+  so the loop cannot tell that a later call is the same one. The loop answers "allow once" only; an agent that offers no such option
+  gets "cancelled".
+- The agent runs under `env -u XAT_PASSWORD -u XAT_PASSWORD_FILE`, so it does not inherit the account password. It does inherit the rest
+  of the environment.
+- A dead agent is reported once, with the end of its error output (redacted and cut); prompts are ignored until `/new`. A reconnect of
+  the XMPP layer is silent. A turn that ends in an error is reported as such.
 - The operational log is one JSON object per line: starts, stops, approvals asked and decided, errors. It holds no message body and
   no secret.

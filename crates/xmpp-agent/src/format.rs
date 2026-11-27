@@ -3,12 +3,15 @@
 use serde_json::Value;
 use xmpp_agent_acp::PermOption;
 use xmpp_agent_client::router::{Reason, Rejected};
-use xmpp_agent_common::redact::describe_tool;
+use xmpp_agent_common::redact::{describe_tool, redact};
 
 use crate::split::{MAX_MESSAGE_CHARS, split_message};
 
 /// Longest tool line, in characters.
 pub const TOOL_LINE_MAX_CHARS: usize = 200;
+
+/// Longest error text of a failed turn, in characters.
+pub const TURN_ERROR_MAX_CHARS: usize = 200;
 
 /// The help text of `/help`.
 pub const HELP: &str = "Commands: /new starts a fresh session, /stop cancels the turn, /status shows the state, /help shows this. Other /commands go to the agent when it has them.";
@@ -22,6 +25,14 @@ pub fn tool_line(title: &str, raw_input: &Value) -> String {
 /// The messages that end a turn: the agent's text split for chat, or a short note when the turn said nothing.
 pub fn turn_messages(text: &str, stop_reason: &str) -> Vec<String> {
     let mut messages = split_message(text, MAX_MESSAGE_CHARS);
+    if let Some(error) = stop_reason.strip_prefix("error:") {
+        let error: String = redact(error.trim())
+            .chars()
+            .take(TURN_ERROR_MAX_CHARS)
+            .collect();
+        messages.push(format!("The turn failed: {error}"));
+        return messages;
+    }
     let cancelled = stop_reason == "cancelled";
     if messages.is_empty() && !cancelled {
         messages.push("The agent finished without a message.".to_owned());
@@ -34,12 +45,13 @@ pub fn turn_messages(text: &str, stop_reason: &str) -> Vec<String> {
 
 /// The id of the option that allows (or refuses) a call: once first, then always. `None` when the agent offers neither.
 pub fn pick_option(options: &[PermOption], allow: bool) -> Option<String> {
-    let (once, always) = if allow {
-        ("allow_once", "allow_always")
+    // Never "allow always": that is an allow that outlives one human decision. Refusing "always" is safe.
+    let kinds: &[&str] = if allow {
+        &["allow_once"]
     } else {
-        ("reject_once", "reject_always")
+        &["reject_once", "reject_always"]
     };
-    [once, always]
+    kinds
         .iter()
         .find_map(|kind| options.iter().find(|option| option.kind == *kind))
         .map(|option| option.id.clone())
@@ -47,12 +59,23 @@ pub fn pick_option(options: &[PermOption], allow: bool) -> Option<String> {
 
 /// The name of a tool as the approvers see it: the title, or a placeholder when the agent sent none.
 pub fn display_tool(title: &str) -> String {
-    title.to_owned()
+    if title.trim().is_empty() {
+        "an unnamed tool".to_owned()
+    } else {
+        title.to_owned()
+    }
 }
 
 /// Make the broker's approval texts true for this loop, which never remembers a call: option 2 allows once.
 pub fn honest_approval_text(text: &str) -> String {
-    text.to_owned()
+    text.replace(
+        "2 to allow this exact call again in this session",
+        "2 to allow once, like 1 (this version does not remember calls)",
+    )
+    .replace(
+        ", and the same call again in this session",
+        ", once (this version does not remember calls)",
+    )
 }
 
 /// The prompt sent to the agent after an approval timed out, so it can continue with independent work.
