@@ -1602,4 +1602,67 @@ mod exactness {
             ReplyKind::Decided
         );
     }
+
+    #[test]
+    fn broker_should_reject_a_request_when_the_timeout_is_not_finite() {
+        // Python: round(float("inf") / 60) raises OverflowError and round(float("nan") / 60) raises ValueError in submit.
+        for timeout in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            let calls = Arc::new(Mutex::new(0));
+            let counted = Arc::clone(&calls);
+            let ids = move || {
+                *counted.lock().unwrap() += 1;
+                "a1".to_owned()
+            };
+            let mut broker = Broker::new([ME], Box::new(|| 1000.0), Box::new(ids), timeout, 20);
+            let call = broker.submit(CTX, "Bash", &json!({"command": "x"}), "tu1");
+            assert_eq!(
+                call.unwrap_err(),
+                SubmitError::TimeoutNotFinite,
+                "{timeout}"
+            );
+            let dialog = broker.submit_question(CTX, &question(), "tu2");
+            assert_eq!(
+                dialog.unwrap_err(),
+                SubmitError::TimeoutNotFinite,
+                "{timeout}"
+            );
+            assert!(
+                broker.pending(None).is_empty(),
+                "nothing waits that could never expire: {timeout}"
+            );
+            assert_eq!(*calls.lock().unwrap(), 0, "no id is taken: {timeout}");
+        }
+    }
+
+    #[test]
+    fn broker_should_reject_a_remembered_call_when_the_timeout_is_not_finite() {
+        // A remembered call is answered at once, but the broker is misconfigured all the same: it fails like any other request.
+        let mut broker = Broker::new(
+            [ME],
+            Box::new(|| 1000.0),
+            Box::new(|| "a1".to_owned()),
+            f64::NAN,
+            20,
+        );
+        assert_eq!(
+            broker.submit(CTX, "Bash", &json!({}), "tu1").unwrap_err(),
+            SubmitError::TimeoutNotFinite
+        );
+    }
+
+    #[test]
+    fn broker_should_accept_the_extremes_of_a_finite_timeout() {
+        for timeout in [0.0, -5.0, 1e300] {
+            let (mut broker, _) = make_with(&[ME], timeout, 20);
+            assert!(bash(&mut broker).request.is_some(), "{timeout}");
+        }
+    }
+
+    #[test]
+    fn submit_error_should_say_what_went_wrong_when_it_is_printed() {
+        assert_eq!(
+            SubmitError::TimeoutNotFinite.to_string(),
+            "the timeout is not a finite number of seconds"
+        );
+    }
 }

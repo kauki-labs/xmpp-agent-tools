@@ -15,6 +15,6 @@ pub mod broker;
 mod text;
 
 pub use broker::{
-    Behavior, Broker, DEFAULT_MAX_PENDING, DEFAULT_TIMEOUT, DENY_MESSAGE, Decision,
-    IdAllocationError, Reason, Reply, ReplyKind, Request, RequestKind, Submitted,
+    Behavior, Broker, DEFAULT_MAX_PENDING, DEFAULT_TIMEOUT, DENY_MESSAGE, Decision, Reason, Reply,
+    ReplyKind, Request, RequestKind, SubmitError, Submitted,
 };

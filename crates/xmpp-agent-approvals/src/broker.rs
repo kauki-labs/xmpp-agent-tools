@@ -166,17 +166,26 @@ pub struct Reply {
     pub decision: Option<Decision>,
 }
 
-/// The id source gave a taken id 101 times in a row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IdAllocationError;
+/// Why [`Broker::submit`] or [`Broker::submit_question`] refused to take a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitError {
+    /// The id source gave a taken id 101 times in a row (Python raises `RuntimeError`).
+    IdAllocation,
+    /// The broker's timeout is infinite or not a number, so a request would never expire (Python raises `OverflowError` or
+    /// `ValueError` while it words the request).
+    TimeoutNotFinite,
+}
 
-impl fmt::Display for IdAllocationError {
+impl fmt::Display for SubmitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("could not allocate a request id")
+        match self {
+            Self::IdAllocation => f.write_str("could not allocate a request id"),
+            Self::TimeoutNotFinite => f.write_str("the timeout is not a finite number of seconds"),
+        }
     }
 }
 
-impl Error for IdAllocationError {}
+impl Error for SubmitError {}
 
 /// Decides approvals and dialogs. See the crate docs for the rules.
 pub struct Broker {
@@ -284,14 +293,14 @@ impl Broker {
     ///
     /// # Errors
     ///
-    /// [`IdAllocationError`] when the id source keeps giving ids that are taken.
+    /// [`SubmitError`] when the id source keeps giving ids that are taken or the timeout is not finite.
     pub fn submit(
         &mut self,
         context: &str,
         tool_name: &str,
         tool_input: &Value,
         tool_use_id: &str,
-    ) -> Result<Submitted, IdAllocationError> {
+    ) -> Result<Submitted, SubmitError> {
         let tool_input = object_of(tool_input);
         if tool_name != "ExitPlanMode"
             && self
@@ -366,13 +375,13 @@ impl Broker {
     ///
     /// # Errors
     ///
-    /// [`IdAllocationError`] when the id source keeps giving ids that are taken.
+    /// [`SubmitError`] when the id source keeps giving ids that are taken or the timeout is not finite.
     pub fn submit_question(
         &mut self,
         context: &str,
         tool_input: &Value,
         tool_use_id: &str,
-    ) -> Result<Submitted, IdAllocationError> {
+    ) -> Result<Submitted, SubmitError> {
         let tool_input = object_of(tool_input);
         let Some(questions) = parse_questions(&tool_input) else {
             return self.refuse(
@@ -520,7 +529,7 @@ impl Broker {
         tool_name: &str,
         tool_input: Map<String, Value>,
         tool_use_id: &str,
-    ) -> Result<Request, IdAllocationError> {
+    ) -> Result<Request, SubmitError> {
         let mut request_id = (self.ids)();
         let mut found = false;
         for _ in 0..ID_ATTEMPTS {
@@ -531,7 +540,7 @@ impl Broker {
             request_id = (self.ids)();
         }
         if !found {
-            return Err(IdAllocationError);
+            return Err(SubmitError::IdAllocation);
         }
         Ok(Request {
             request_id,
@@ -559,7 +568,7 @@ impl Broker {
         tool_input: Map<String, Value>,
         tool_use_id: &str,
         reason: Reason,
-    ) -> Result<Submitted, IdAllocationError> {
+    ) -> Result<Submitted, SubmitError> {
         let request = self.request(context, kind, tool_name, tool_input, tool_use_id)?;
         let notice = match reason {
             Reason::TooMany => "Too many approvals are waiting; the newest was denied.",
