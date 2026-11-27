@@ -6,7 +6,7 @@ use clap::Parser;
 use rmcp::ServiceExt;
 use xmpp_agent_rooms::app;
 use xmpp_agent_rooms::cli::{Cli, Command};
-use xmpp_agent_rooms::config::Env;
+use xmpp_agent_rooms::config::{Capabilities, Env};
 use xmpp_agent_rooms::errors::{ConfigError, RoomsError};
 
 /// The settings from the environment, read once here so the rest takes plain values.
@@ -21,11 +21,15 @@ fn read_env() -> Env {
 
 fn run(cli: &Cli) -> Result<String, RoomsError> {
     let env = read_env();
-    let file = match &cli.config {
-        Some(path) => Some(std::fs::read_to_string(path).map_err(|e| {
+    // Read the file only when it can matter: a disabled MCP server needs no settings.
+    let granted =
+        Capabilities::from_sources(cli.capabilities.as_deref(), env.capabilities.as_deref())
+            .allows_rooms();
+    let file = match (&cli.config, granted) {
+        (Some(path), true) => Some(std::fs::read_to_string(path).map_err(|e| {
             ConfigError::File(format!("cannot read {}: {}", path.display(), e.kind()))
         })?),
-        None => None,
+        _ => None,
     };
     let (flag, file) = (cli.capabilities.as_deref(), file.as_deref());
     match cli.command.action() {

@@ -37,9 +37,9 @@ impl RoomName {
 pub struct BareJid(String);
 
 impl BareJid {
-    /// Accept `<local>@<domain>`: one `@`, both parts non-empty, no `/`, no whitespace.
+    /// Accept `<local>@<domain>`: one `@`, both parts non-empty, no `/`, no whitespace, no control character.
     pub fn parse(input: &str) -> Result<Self, ValidationError> {
-        let forbidden = |c: char| c == '/' || c.is_whitespace();
+        let forbidden = |c: char| c == '/' || c.is_whitespace() || c.is_control();
         match input.split_once('@') {
             Some((local, domain))
                 if !local.is_empty()

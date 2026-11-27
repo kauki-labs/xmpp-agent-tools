@@ -54,10 +54,10 @@ pub enum ServiceError {
 impl fmt::Display for ServiceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Invalid(text) => write!(f, "rights service refused the input: {text}"),
+            Self::Invalid(text) => write!(f, "rights service refused the input (400): {text}"),
             Self::Unauthorized => f.write_str("rights service refused the token (401)"),
             Self::Forbidden => f.write_str("the caller is not a higher entity (403)"),
-            Self::Conflict(text) => write!(f, "conflict: {text}"),
+            Self::Conflict(text) => write!(f, "conflict (409): {text}"),
             Self::Server(status) => write!(f, "rights service failed ({status})"),
             Self::UnexpectedStatus(status) => {
                 write!(f, "unexpected status {status} from the rights service")

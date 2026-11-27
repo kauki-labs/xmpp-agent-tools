@@ -56,7 +56,8 @@ impl<T: Transport> Rooms<T> {
                 let name = RoomName::parse(name)?;
                 let request = api::create_request(&name);
                 let response = self.transport.post(&request.path, &request.body)?;
-                let Created { room, created } = api::map_create(response.status, &response.body)?;
+                let Created { room, created } =
+                    api::map_create(response.status, &response.body)?.for_name(&name)?;
                 Ok(if created {
                     format!("created {room}")
                 } else {

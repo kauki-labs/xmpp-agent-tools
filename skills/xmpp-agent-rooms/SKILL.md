@@ -20,7 +20,7 @@ xmpp-agent-rooms assign <room> <jid>
 xmpp-agent-rooms unassign <room> <jid>
 ```
 
-Exit code 0 means done. Exit code 1 prints the reason on stderr.
+Exit code 0 means done. Exit code 1 prints the reason on stderr. Exit code 2 means a usage error.
 
 ## MCP tools
 
@@ -35,5 +35,5 @@ Exit code 0 means done. Exit code 1 prints the reason on stderr.
 ## When it fails
 
 - `401` or `403`: you are not allowed. Do not retry; tell the user.
-- `409` or `400`: read the reason, fix the input once, then ask the user.
+- `400` or `409` (the message names it): read the reason, fix the input once, then ask the user.
 - No answer or an odd reply: treat it as failed. Do not assume the room exists.

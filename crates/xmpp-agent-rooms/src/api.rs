@@ -28,6 +28,25 @@ pub struct Created {
     pub created: bool,
 }
 
+impl Created {
+    /// Accept the answer only when `room` is `<name>@<host>` for the requested name and a host with no whitespace or control character.
+    pub fn for_name(self, name: &RoomName) -> Result<Self, ServiceError> {
+        let host = self
+            .room
+            .strip_prefix(name.as_str())
+            .and_then(|rest| rest.strip_prefix('@'));
+        match host {
+            Some(host)
+                if !host.is_empty()
+                    && !host.contains(|c: char| c.is_whitespace() || c.is_control()) =>
+            {
+                Ok(self)
+            }
+            _ => Err(ServiceError::MalformedResponse),
+        }
+    }
+}
+
 /// Build the request that creates a room.
 pub fn create_request(name: &RoomName) -> Request {
     Request {
@@ -52,11 +71,11 @@ pub fn map_create(status: u16, body: &str) -> Result<Created, ServiceError> {
     }
 }
 
-/// Map the answer to an affiliation change.
+/// Map the answer to an affiliation change. The contract body is `{}`; anything else is not an answer this client understands.
 pub fn map_assign(status: u16, body: &str) -> Result<(), ServiceError> {
     match status {
         200 => match serde_json::from_str::<Value>(body) {
-            Ok(Value::Object(_)) => Ok(()),
+            Ok(Value::Object(fields)) if fields.is_empty() => Ok(()),
             _ => Err(ServiceError::MalformedResponse),
         },
         other => Err(refusal(other, body)),

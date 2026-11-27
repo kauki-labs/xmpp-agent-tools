@@ -6,7 +6,7 @@ no XMPP credential. The service is a separate piece and is not built here; this 
 ## Authentication
 
 Every request carries `Authorization: Bearer <token>`. The token is bound to one caller JID. The service answers `401` when the token is
-missing, malformed or unknown, and `403` when the caller is not a higher entity. The client never prints the token.
+missing, malformed or unknown, and `403` when the caller is not a higher entity. The client never prints the token. It removes the token from any text the service sends back, also when the service echoes it with JSON escapes.
 
 ## Validation
 
@@ -16,7 +16,7 @@ service checks them again and answers `400` for a violation.
 | Input | Rule |
 | ----- | ---- |
 | room name | matches `[a-z0-9_]{1,32}` over the whole string; a name starting with `org_` is refused |
-| member JID | bare: one `@`, a non-empty local part, a non-empty domain, no `/`, no whitespace |
+| member JID | bare: one `@`, a non-empty local part, a non-empty domain, no `/`, no whitespace, no control character |
 | affiliation | `member` or `none` only; never `admin` or `owner` |
 
 ## `POST /v1/rooms`
@@ -25,7 +25,7 @@ Create a room, or report that it exists.
 
 Request body: `{"name": "<name>"}`.
 
-Response `200`: `{"room": "<name>@<muc host>", "created": true}`. `created` is `false` when the room already existed.
+Response `200`: `{"room": "<name>@<muc host>", "created": true}`. `created` is `false` when the room already existed. The client accepts `room` only as `<name>@<host>` for the requested name, with a host that has no whitespace or control character.
 
 ## `POST /v1/rooms/{name}/members`
 
@@ -33,7 +33,7 @@ Set the affiliation of one member in a room.
 
 Request body: `{"jid": "<bare jid>", "affiliation": "member"}`. Use `"none"` to remove the member.
 
-Response `200`: `{}`.
+Response `200`: exactly `{}`. A `200` with any other body is an error.
 
 ## Errors
 
@@ -48,7 +48,7 @@ An error response has a JSON body `{"error": "<text>"}`. The client shows the te
 | `5xx` | service failure | `server` with the status |
 | any other status, a malformed body, a timeout, a connection failure | unknown outcome | an error; never success |
 
-A `200` whose body does not match the shape above is an error. The client fails closed.
+A `200` whose body does not match the shape above is an error. The client fails closed. It reads at most 64 KiB of body, follows no redirect and ignores proxy environment variables, so the token goes only to the configured URL.
 
 ## Client settings
 
@@ -57,6 +57,6 @@ A `200` whose body does not match the shape above is an error. The client fails 
 | rights service base URL | env `XAT_RIGHTS_URL`, or `rights_url` in the `--config` file | none, required |
 | bearer token | env `XAT_RIGHTS_TOKEN`, or `rights_token` in the `--config` file | none, required |
 | request timeout | `timeout_secs` in the `--config` file | 10 |
-| capabilities | env `XAT_CAPABILITIES`, a comma or space separated list, or `--capabilities` | none; `rooms` is required |
+| capabilities | env `XAT_CAPABILITIES`, a comma or space separated list, or `--capabilities`; the flag wins over the variable | none; `rooms` is required |
 
-An environment variable overrides the same setting in the file.
+An environment variable overrides the same setting in the file. The file is read only when the `rooms` capability is granted.

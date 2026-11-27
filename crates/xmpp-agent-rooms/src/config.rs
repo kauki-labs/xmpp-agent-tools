@@ -63,12 +63,22 @@ struct FileSettings {
     timeout_secs: Option<u64>,
 }
 
+/// An error text that names the line and never quotes the file: the parser's own message can repeat a value, and a value may be the token.
+fn file_error(text: &str, error: &toml::de::Error) -> ConfigError {
+    let line = error.span().map_or(0, |span| {
+        text.get(..span.start)
+            .map_or(0, |head| head.matches('\n').count() + 1)
+    });
+    ConfigError::File(format!(
+        "the file is not valid TOML with the keys rights_url, rights_token and timeout_secs (line {line})"
+    ))
+}
+
 impl Config {
     /// Merge the environment over the TOML text of a config file. An environment value wins.
     pub fn load(env: &Env, file: Option<&str>) -> Result<Self, ConfigError> {
         let from_file = match file {
-            Some(text) => toml::from_str::<FileSettings>(text)
-                .map_err(|e| ConfigError::File(e.message().to_owned()))?,
+            Some(text) => toml::from_str::<FileSettings>(text).map_err(|e| file_error(text, &e))?,
             None => FileSettings::default(),
         };
         let present = |value: &Option<String>| value.clone().filter(|v| !v.is_empty());
