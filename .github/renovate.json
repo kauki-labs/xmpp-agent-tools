@@ -1,0 +1,34 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": true
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Python tools pinned with == in workflow run steps",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "pip install (?:--user )?(?<depName>[a-z0-9_.-]+)==(?<currentValue>[0-9][^\\s]*)"
+      ],
+      "datasourceTemplate": "pypi"
+    },
+    {
+      "customType": "regex",
+      "description": "Go tools installed with @version in workflow run steps",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "go install (?<depName>github\\.com/[^/@\\s]+/[^/@\\s]+)(?:/[^@\\s]*)?@(?<currentValue>v[0-9][^\\s]*)"
+      ],
+      "datasourceTemplate": "go"
+    }
+  ]
+}
