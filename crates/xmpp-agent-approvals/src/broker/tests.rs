@@ -1587,4 +1587,19 @@ mod exactness {
             assert_eq!(reason.as_str(), name);
         }
     }
+
+    #[test]
+    fn broker_should_refuse_a_sender_when_only_a_newer_unicode_lowercases_it_to_the_approver() {
+        // Python 3.13 leaves U+A7CB as it is, so it is not the approver "\u{264}@chat.example"; a newer Unicode lowercases it to U+0264.
+        let (mut broker, _) = make_with(&["\u{264}@chat.example"], 900.0, 20);
+        bash(&mut broker);
+        assert_eq!(
+            broker.handle_reply("\u{a7cb}@chat.example", CTX, "1").kind,
+            ReplyKind::Forbidden
+        );
+        assert_eq!(
+            broker.handle_reply("\u{264}@chat.example", CTX, "1").kind,
+            ReplyKind::Decided
+        );
+    }
 }

@@ -6,7 +6,7 @@
 //! - Whitespace is `str.isspace`: Rust's `White_Space` plus U+001C to U+001F.
 //! - A digit is a Unicode decimal digit (`\d` in a `str` pattern, and what `int()` accepts), the table below. It is a table, not the
 //!   `regex` crate's `\d`, so the digit set cannot move with a Unicode update on one side only.
-//! - Lowercasing is `str.lower`, which Rust's `to_lowercase` matches (full mappings and the final sigma rule).
+//! - Lowercasing is `str.lower`: Rust's `to_lowercase` (full mappings, the final sigma rule) except for capitals newer than Unicode 15.1.
 
 use serde_json::Value;
 
@@ -43,9 +43,26 @@ pub(crate) fn split_first_word(text: &str) -> Option<(&str, &str)> {
     }
 }
 
+/// Capital letters that Unicode 16 and 17 added and that Python 3.13 (Unicode 15.1) does not lowercase: the Rust toolchain does, so
+/// they are left alone to keep a JID or a word comparing the same in both. This is every code point where `char::to_lowercase` of
+/// Rust 1.95 and `str.lower` of Python 3.13 differ.
+fn is_newer_capital(c: char) -> bool {
+    matches!(u32::from(c), 0x1C89 | 0xA7CB..=0xA7CC | 0xA7CE | 0xA7D2 | 0xA7D4 | 0xA7DA | 0xA7DC | 0x10D50..=0x10D65 | 0x16EA0..=0x16EB8)
+}
+
 /// Python's `str.lower()`.
+///
+/// Runs between the newer capitals are lowercased as a whole, so the final sigma rule sees the same neighbours as Python.
 pub(crate) fn lower(text: &str) -> String {
-    text.to_lowercase()
+    let mut out = String::with_capacity(text.len());
+    let mut run_start = 0;
+    for (index, c) in text.char_indices().filter(|(_, c)| is_newer_capital(*c)) {
+        out.push_str(&text[run_start..index].to_lowercase());
+        out.push(c);
+        run_start = index + c.len_utf8();
+    }
+    out.push_str(&text[run_start..].to_lowercase());
+    out
 }
 
 /// Whether Python treats the value as true: not null, false, zero, or an empty string, array or object.
@@ -170,6 +187,33 @@ mod tests {
         assert_eq!(lower("\u{391}\u{3a3} \u{392}"), "\u{3b1}\u{3c2} \u{3b2}");
         assert_eq!(lower("\u{1e9e}"), "\u{df}");
         assert_eq!(lower("\u{212a}"), "k");
+    }
+
+    #[test]
+    fn lower_should_leave_capitals_alone_when_python_3_13_does_not_know_them() {
+        // Python 3.13: "\ua7cb".lower() == "\ua7cb"; the Rust toolchain's Unicode is newer and maps it to U+0264.
+        assert_eq!(lower("\u{a7cb}"), "\u{a7cb}");
+        assert_eq!(lower("A\u{a7cb}B"), "a\u{a7cb}b");
+        assert_eq!(
+            lower("\u{1c89}\u{10d50}\u{10d65}\u{16ea0}\u{16eb8}"),
+            "\u{1c89}\u{10d50}\u{10d65}\u{16ea0}\u{16eb8}"
+        );
+        assert_eq!(
+            lower("\u{a7cc}\u{a7ce}\u{a7d2}\u{a7d4}\u{a7da}\u{a7dc}"),
+            "\u{a7cc}\u{a7ce}\u{a7d2}\u{a7d4}\u{a7da}\u{a7dc}"
+        );
+        // Neighbours of one: U+A7CD and U+16EB9 are lowercase already, U+10D66 is not a capital.
+        assert_eq!(
+            lower("\u{a7cd}\u{16eb9}\u{10d66}"),
+            "\u{a7cd}\u{16eb9}\u{10d66}"
+        );
+    }
+
+    #[test]
+    fn lower_should_apply_the_final_sigma_rule_when_a_newer_capital_is_next_to_it() {
+        // Python 3.13: "\u0391\u03a3\ua7cb".lower() == "\u03b1\u03c2\ua7cb"; the capital is not cased there.
+        assert_eq!(lower("\u{391}\u{3a3}\u{a7cb}"), "\u{3b1}\u{3c2}\u{a7cb}");
+        assert_eq!(lower("\u{a7cb}\u{3a3}"), "\u{a7cb}\u{3c3}");
     }
 
     #[test]
