@@ -1,20 +1,219 @@
 //! Redact secrets and describe a tool call for chat.
 //!
-//! Port of `src/xmpp_agent_common/redact.py`.
+//! Port of `src/xmpp_agent_common/redact.py`. Tool arguments can hold tokens, and an approval request lands in the room archive.
+//! [`describe_tool`] redacts first and cuts second, so a token can never survive as a prefix. File content and edit text are
+//! never shown, only their size. The patterns cover common token shapes and key=value pairs; an unknown secret format will
+//! pass, which is why arguments are also cut short.
 
-use serde_json::Value;
+use std::io;
+use std::sync::LazyLock;
+
+use regex::Regex;
+use serde::Serialize;
+use serde_json::ser::{Formatter, Serializer};
+use serde_json::{Map, Value};
 
 /// Default length limit of [`describe_tool`], in characters.
 pub const DEFAULT_MAX_CHARS: usize = 400;
 
-/// Replace secrets in `text` with placeholders.
+/// Length limit of one argument of an unknown tool, in characters.
+const ARGUMENT_MAX_CHARS: usize = 80;
+
+const KEYWORDS: &str = "(?:password|passwd|pwd|secret|token|api[_-]?key|credential)";
+
+/// Ordered (pattern, replacement) pairs; the replacement uses the `regex` crate syntax (`${1}`).
+static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
+    let flag_value =
+        format!(r#"(?i)(--?[A-Za-z0-9_-]*{KEYWORDS}[A-Za-z0-9_-]*)(\s+)("[^"]*"|'[^']*'|\S+)"#);
+    let name_value = format!(
+        r#"(?i)\b([A-Za-z0-9_.-]*{KEYWORDS}[A-Za-z0-9_.-]*)(["']?\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)"#
+    );
+    let patterns: [(&str, &'static str); 11] = [
+        (
+            r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+            "[redacted private key]",
+        ),
+        // The Python pattern has a lookbehind for `://`; the `regex` crate has none, so the scheme is captured and put back.
+        (r"(://)[^/\s:@]+:[^/\s@]+@", "${1}[redacted]@"),
+        (
+            r#"(?i)(authorization\s*:\s*)(?:(?:bearer|basic|token)\s+)?[^\s"']+"#,
+            "${1}[redacted]",
+        ),
+        (
+            r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{10,}",
+            "Bearer [redacted]",
+        ),
+        (r"\bAKIA[0-9A-Z]{16}\b", "[redacted aws key]"),
+        (
+            r"\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b",
+            "[redacted token]",
+        ),
+        (r"\bxox[abprs]-[A-Za-z0-9-]{10,}", "[redacted token]"),
+        (r"\bsk-[A-Za-z0-9_-]{16,}", "[redacted token]"),
+        (
+            r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+            "[redacted token]",
+        ),
+        // --password 'x' (a space separates a flag from its value)
+        (&flag_value, "${1}${2}[redacted]"),
+        // NAME=value, name: value, "name": "value"
+        (&name_value, "${1}${2}[redacted]"),
+    ];
+    patterns
+        .into_iter()
+        .map(|(pattern, replacement)| {
+            (
+                Regex::new(pattern).expect("a constant pattern is valid"),
+                replacement,
+            )
+        })
+        .collect()
+});
+
+/// Replace secrets in `text` with placeholders. Applying it twice changes nothing more.
 pub fn redact(text: &str) -> String {
-    text.to_owned()
+    PATTERNS
+        .iter()
+        .fold(text.to_owned(), |text, (pattern, replacement)| {
+            pattern.replace_all(&text, *replacement).into_owned()
+        })
+}
+
+/// Cut `text` to `max_chars` characters, ending in a marker that gives the cut size. A limit shorter than the marker keeps only the marker.
+fn cut(text: &str, max_chars: usize) -> String {
+    let length = text.chars().count();
+    if length <= max_chars {
+        return text.to_owned();
+    }
+    // The digit count of `length` is an upper bound for the exact one below.
+    let marker_length = format!(" … [+{length} more chars]").chars().count();
+    let keep = max_chars.saturating_sub(marker_length);
+    let kept: String = text.chars().take(keep).collect();
+    format!("{kept} … [+{} more chars]", length - keep)
+}
+
+/// Writes JSON the way Python's `json.dumps` does: `", "` and `": "` as separators, non-ASCII text as is.
+struct PythonSeparators;
+
+impl Formatter for PythonSeparators {
+    fn begin_array_value<W: ?Sized + io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
+        if first {
+            Ok(())
+        } else {
+            writer.write_all(b", ")
+        }
+    }
+
+    fn begin_object_key<W: ?Sized + io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
+        if first {
+            Ok(())
+        } else {
+            writer.write_all(b", ")
+        }
+    }
+
+    fn begin_object_value<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        writer.write_all(b": ")
+    }
+}
+
+/// A string as is, anything else as JSON text.
+fn text_of(value: &Value) -> String {
+    if let Value::String(text) = value {
+        return text.clone();
+    }
+    let mut buffer = Vec::new();
+    match value.serialize(&mut Serializer::with_formatter(
+        &mut buffer,
+        PythonSeparators,
+    )) {
+        Ok(()) => String::from_utf8_lossy(&buffer).into_owned(),
+        Err(_) => value.to_string(),
+    }
+}
+
+/// Python truthiness: absent, null, false, zero and empty values are false.
+fn is_set(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+        Some(Value::Number(number)) => number.as_f64() != Some(0.0),
+        Some(Value::String(text)) => !text.is_empty(),
+        Some(Value::Array(items)) => !items.is_empty(),
+        Some(Value::Object(items)) => !items.is_empty(),
+        Some(Value::Bool(true)) => true,
+    }
+}
+
+/// Python's `str.rstrip()`, which also strips the information separators U+001C to U+001F.
+fn rstrip(text: &str) -> &str {
+    text.trim_end_matches(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c))
 }
 
 /// Describe a tool call in at most `max_chars` characters, redacted first and cut second.
-pub fn describe_tool(_tool_name: &str, _tool_input: &Value, _max_chars: usize) -> String {
-    String::new()
+///
+/// The result is meant for chat. It never contains file content or edit text, only their size, and a `tool_input` that is not a
+/// JSON object counts as empty.
+pub fn describe_tool(tool_name: &str, tool_input: &Value, max_chars: usize) -> String {
+    let empty = Map::new();
+    let input = tool_input.as_object().unwrap_or(&empty);
+    let field = |key: &str| input.get(key).map_or_else(String::new, text_of);
+    let set = |key: &str| is_set(input.get(key));
+    let size = |key: &str| field(key).chars().count();
+    let with_path = |label: &str| {
+        if set("path") {
+            format!("{label} {} in {}", field("pattern"), field("path"))
+        } else {
+            format!("{label} {}", field("pattern"))
+        }
+    };
+
+    let out = match tool_name {
+        "Bash" if set("description") => {
+            format!("Bash: {} ({})", field("command"), field("description"))
+        }
+        "Bash" => format!("Bash: {}", field("command")),
+        "Write" => format!("Write {} ({} chars)", field("file_path"), size("content")),
+        "Edit" => format!(
+            "Edit {} (replace {} chars with {} chars)",
+            field("file_path"),
+            size("old_string"),
+            size("new_string")
+        ),
+        "MultiEdit" => {
+            let edits = input
+                .get("edits")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            format!("MultiEdit {} ({edits} edits)", field("file_path"))
+        }
+        "NotebookEdit" => format!("NotebookEdit {}", field("notebook_path")),
+        "Read" => format!("Read {}", field("file_path")),
+        "Glob" => with_path("Glob"),
+        "Grep" => with_path("Grep"),
+        "WebFetch" => format!("WebFetch {}", field("url")),
+        "WebSearch" => format!("WebSearch {}", field("query")),
+        _ => {
+            let pairs: Vec<String> = input
+                .iter()
+                .map(|(key, value)| {
+                    format!(
+                        "{key}={}",
+                        cut(&redact(&text_of(value)), ARGUMENT_MAX_CHARS)
+                    )
+                })
+                .collect();
+            rstrip(&format!("{tool_name} {}", pairs.join(", "))).to_owned()
+        }
+    };
+    cut(&redact(&out), max_chars)
 }
 
 #[cfg(test)]
