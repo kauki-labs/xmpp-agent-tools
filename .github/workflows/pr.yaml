@@ -1,9 +1,14 @@
+# Everything that runs on a pull request. `Merge gate` is the only required check on main (a ruleset requires that exact name):
+# it is green when every other job is success or skipped (a job that did not apply to the change) and red for anything else.
+# Add new check jobs here and list them in the gate's `needs`.
 name: PR
 
 on:
   pull_request:
+    branches: [main]
   merge_group:
 
+# No permissions by default; each job asks for what it needs.
 permissions: {}
 
 concurrency:
@@ -11,27 +16,116 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Add new check jobs here, then list them in `needs` of the merge gate below.
-  checks:
-    name: Checks
-    runs-on: ubuntu-latest
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      workflows: ${{ steps.classify.outputs.workflows }}
     steps:
-      - run: echo "No checks defined yet."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          # An unknown base (a manual run) classifies as "everything changed".
+          if [ -n "$BASE_SHA" ] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            git diff --name-only "$BASE_SHA" "$HEAD_SHA" | python3 ci/changes.py
+          else
+            : | python3 ci/changes.py
+          fi
+          # The classifier writes to $GITHUB_OUTPUT.
 
-  # The only required status check on main. It passes when every job in `needs`
-  # succeeded or was skipped, and fails when any of them failed or was cancelled.
+  tests:
+    name: tests
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -m pip install --user coverage==7.17.5
+      - name: Unit tests with branch coverage
+        env:
+          PYTHONPATH: src
+        run: |
+          python3 -m coverage run --branch --source=src -m unittest discover -s tests -t .
+          python3 -m coverage report -m --fail-under=90
+
+  mutation:
+    name: mutation
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Every mutation must fail the tests
+        run: python3 scripts/mutation-check.py
+
+  scrub:
+    name: scrub
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: No internal names in a public repository
+        run: python3 ci/scrub.py
+
+  workflows:
+    name: workflows
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -m pip install --user zizmor==1.33.1
+      - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: actionlint
+        run: |
+          "$(go env GOPATH)/bin/actionlint" .github/workflows/*.yaml
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -m zizmor --format plain .github/workflows
+
   merge-gate:
     name: Merge gate
+    needs: [changes, tests, mutation, scrub, workflows]
     if: always()
-    needs: [checks]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
-      - name: Require all jobs to be green
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Green only if every job is success or skipped
         env:
-          NEEDS: ${{ toJSON(needs) }}
-        run: |
-          echo "$NEEDS"
-          if echo "$NEEDS" | grep -Eq '"result": "(failure|cancelled)"'; then
-            echo "A required job did not pass." >&2
-            exit 1
-          fi
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 ci/merge_gate.py
