@@ -1,0 +1,12 @@
+[package]
+name = "xmpp-agent-approvals"
+version = "0.1.0"
+description = "Approvals and dialogs for a harness, pure logic"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+xmpp-agent-common = { path = "../xmpp-agent-common" }
