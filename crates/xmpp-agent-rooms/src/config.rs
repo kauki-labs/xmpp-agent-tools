@@ -260,6 +260,16 @@ mod settings {
     }
 
     #[test]
+    fn load_should_name_the_line_when_the_file_has_a_wrong_type() {
+        let error = Config::load(
+            &Env::default(),
+            Some("rights_url = \"http://x\"\n\ntimeout_secs = \"soon\"\n"),
+        )
+        .expect_err("bad file");
+        assert!(error.to_string().contains("line 3"), "{error}");
+    }
+
+    #[test]
     fn debug_should_hide_the_token_when_the_config_is_printed() {
         let config = Config::load(
             &env(Some("https://rights.example.org"), Some("s3cr3t-value")),

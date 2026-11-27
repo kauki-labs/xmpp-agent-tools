@@ -243,6 +243,24 @@ mod responses {
         assert_eq!(map_assign(status, body), Err(expected));
     }
 
+    #[rstest]
+    #[case("lab@muc example.org")]
+    #[case("lab@muc.example.org\u{7f}")]
+    #[case("lab@muc.example.org\n")]
+    fn created_should_refuse_a_host_with_whitespace_or_a_control_character_when_checked_for_the_name(
+        #[case] room: &str,
+    ) {
+        let name = RoomName::parse("lab").expect("valid");
+        let created = Created {
+            room: room.to_owned(),
+            created: true,
+        };
+        assert_eq!(
+            created.for_name(&name),
+            Err(ServiceError::MalformedResponse)
+        );
+    }
+
     #[test]
     fn map_create_should_redact_the_service_text_when_it_holds_a_secret() {
         let body = r#"{"error": "bad request, token=abcdef123456 was sent"}"#;

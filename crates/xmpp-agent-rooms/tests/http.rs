@@ -341,6 +341,14 @@ fn actions_should_fail_when_the_answer_is_larger_than_the_limit() {
 }
 
 #[test]
+fn actions_should_accept_an_answer_well_under_the_limit() -> anyhow_free::Result {
+    let padding = " ".repeat(8 * 1024);
+    let fake = Fake::always(200, &format!("{{}}{padding}"));
+    fake.rooms().run(&assign("lab", "alice@chat.example.org"))?;
+    Ok(())
+}
+
+#[test]
 fn actions_should_name_the_status_when_the_service_sends_400_or_409() {
     let invalid = Fake::always(400, r#"{"error": "bad name"}"#);
     assert!(
