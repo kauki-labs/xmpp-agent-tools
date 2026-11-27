@@ -301,6 +301,7 @@ impl Broker {
         tool_input: &Value,
         tool_use_id: &str,
     ) -> Result<Submitted, SubmitError> {
+        self.check_timeout()?;
         let tool_input = object_of(tool_input);
         if tool_name != "ExitPlanMode"
             && self
@@ -382,6 +383,7 @@ impl Broker {
         tool_input: &Value,
         tool_use_id: &str,
     ) -> Result<Submitted, SubmitError> {
+        self.check_timeout()?;
         let tool_input = object_of(tool_input);
         let Some(questions) = parse_questions(&tool_input) else {
             return self.refuse(
@@ -516,6 +518,14 @@ impl Broker {
             ));
         }
         out
+    }
+
+    /// A timeout that is not finite never expires, so a request under it would wait for ever.
+    fn check_timeout(&self) -> Result<(), SubmitError> {
+        match self.timeout.is_finite() {
+            true => Ok(()),
+            false => Err(SubmitError::TimeoutNotFinite),
+        }
     }
 
     fn minutes(&self) -> i64 {
