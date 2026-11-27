@@ -7,6 +7,8 @@
 //! Where Python and Rust differ, the Python behaviour is kept: whitespace is Python's (it adds U+001C to U+001F), the name check is
 //! an exact `fullmatch`, and suggestions come from a port of `difflib.get_close_matches`.
 
+use std::collections::{BTreeSet, HashMap};
+
 /// A plain message for the model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompt {
@@ -53,6 +55,11 @@ pub enum Routed {
     Rejected(Rejected),
 }
 
+/// `difflib` turns on `autojunk` for a second sequence this long.
+const AUTOJUNK_MIN_LEN: usize = 200;
+const CUTOFF: f64 = 0.6;
+const MAX_SUGGESTIONS: usize = 3;
+
 pub const LOCAL_COMMANDS: [&str; 6] = ["new", "stop", "status", "verbose", "mode", "help"];
 
 /// Python's `str.isspace`: Unicode `White_Space` plus U+001C to U+001F.
@@ -62,33 +69,203 @@ fn is_py_space(c: char) -> bool {
 
 /// Python's `str.strip()`.
 fn py_strip(s: &str) -> &str {
-    s
+    s.trim_matches(is_py_space)
 }
 
-/// `re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:_.-]*", s)`.
+/// `re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:_.-]*", s)`. Plugin skills carry a colon, e.g. `code-review:code-review`.
 fn is_name(s: &str) -> bool {
-    false
+    let mut chars = s.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '.' | '-'))
 }
 
 /// The text after the command prefix, or `None` when the message does not start with one.
 fn command_body(text: &str) -> Option<&str> {
-    None
+    if let Some(body) = text.strip_prefix("//") {
+        return Some(body);
+    }
+    if let Some(body) = text.strip_prefix('/') {
+        return Some(body);
+    }
+    // Python tests `text[1].isalnum()`. `char::is_alphanumeric` differs for some non-ASCII characters (combining marks), but
+    // such a character starts a token that fails the name check, so the result is a prompt either way.
+    text.strip_prefix('!')
+        .filter(|body| body.chars().next().is_some_and(char::is_alphanumeric))
 }
 
-/// `difflib.SequenceMatcher(None, a, b).ratio()`, with the default `autojunk`.
+/// `SequenceMatcher(None, a, b)` as `get_close_matches` uses it, with the default `autojunk`.
+struct Matcher<'a> {
+    a: &'a [char],
+    b: &'a [char],
+    /// For each character of `b`, its indices in ascending order; popular characters of a long `b` are left out.
+    b2j: HashMap<char, Vec<usize>>,
+}
+
+impl<'a> Matcher<'a> {
+    fn new(a: &'a [char], b: &'a [char]) -> Self {
+        let mut b2j: HashMap<char, Vec<usize>> = HashMap::new();
+        for (j, &c) in b.iter().enumerate() {
+            b2j.entry(c).or_default().push(j);
+        }
+        if b.len() >= AUTOJUNK_MIN_LEN {
+            let ntest = b.len() / 100 + 1;
+            b2j.retain(|_, indices| indices.len() <= ntest);
+        }
+        Matcher { a, b, b2j }
+    }
+
+    /// `find_longest_match(alo, ahi, blo, bhi)` as `(i, j, size)`: earliest in `a`, then earliest in `b`, among the longest.
+    fn longest_match(
+        &self,
+        alo: usize,
+        ahi: usize,
+        blo: usize,
+        bhi: usize,
+    ) -> (usize, usize, usize) {
+        let (mut besti, mut bestj, mut bestsize) = (alo, blo, 0);
+        let mut j2len: HashMap<usize, usize> = HashMap::new();
+        for i in alo..ahi {
+            let mut newj2len = HashMap::new();
+            for &j in self.b2j.get(&self.a[i]).into_iter().flatten() {
+                if j < blo {
+                    continue;
+                }
+                if j >= bhi {
+                    break;
+                }
+                let k = j.checked_sub(1).and_then(|p| j2len.get(&p)).unwrap_or(&0) + 1;
+                newj2len.insert(j, k);
+                if k > bestsize {
+                    (besti, bestj, bestsize) = (i + 1 - k, j + 1 - k, k);
+                }
+            }
+            j2len = newj2len;
+        }
+        // Extend with equal characters, popular ones included (there is no junk set).
+        while besti > alo && bestj > blo && self.a[besti - 1] == self.b[bestj - 1] {
+            (besti, bestj, bestsize) = (besti - 1, bestj - 1, bestsize + 1);
+        }
+        while besti + bestsize < ahi
+            && bestj + bestsize < bhi
+            && self.a[besti + bestsize] == self.b[bestj + bestsize]
+        {
+            bestsize += 1;
+        }
+        (besti, bestj, bestsize)
+    }
+
+    /// The sum of the sizes of the matching blocks.
+    fn matches(&self) -> usize {
+        let mut total = 0;
+        let mut queue = vec![(0, self.a.len(), 0, self.b.len())];
+        while let Some((alo, ahi, blo, bhi)) = queue.pop() {
+            let (i, j, k) = self.longest_match(alo, ahi, blo, bhi);
+            if k > 0 {
+                total += k;
+                if alo < i && blo < j {
+                    queue.push((alo, i, blo, j));
+                }
+                if i + k < ahi && j + k < bhi {
+                    queue.push((i + k, ahi, j + k, bhi));
+                }
+            }
+        }
+        total
+    }
+}
+
+/// `difflib.SequenceMatcher(None, a, b).ratio()`.
 fn ratio(a: &[char], b: &[char]) -> f64 {
-    0.0
+    let length = a.len() + b.len();
+    if length == 0 {
+        return 1.0;
+    }
+    2.0 * Matcher::new(a, b).matches() as f64 / length as f64
 }
 
-/// `difflib.get_close_matches(word, possibilities, n=3, cutoff=0.6)`.
+/// `difflib.get_close_matches(word, possibilities, n=3, cutoff=0.6)`. Python's quick checks only filter, so the ratio decides.
 fn close_matches(word: &str, possibilities: &[&str]) -> Vec<String> {
-    Vec::new()
+    let word: Vec<char> = word.chars().collect();
+    let mut scored: Vec<(f64, &str)> = possibilities
+        .iter()
+        .map(|&x| (ratio(&x.chars().collect::<Vec<_>>(), &word), x))
+        .filter(|&(score, _)| score >= CUTOFF)
+        .collect();
+    // `heapq.nlargest(n, [(score, x)])`: score descending, then the string descending.
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| b.1.cmp(a.1)));
+    scored
+        .into_iter()
+        .take(MAX_SUGGESTIONS)
+        .map(|(_, x)| x.to_string())
+        .collect()
 }
 
 /// Classify one message. `harness_commands` and `terminal_commands` are the command names from the init event.
 pub fn route(text: &str, harness_commands: &[&str], terminal_commands: &[&str]) -> Routed {
-    Routed::Prompt(Prompt {
-        text: text.to_string(),
+    let text = py_strip(text);
+    if text.is_empty() {
+        return rejected(Reason::Empty, "", Vec::new());
+    }
+    let Some(body) = command_body(text) else {
+        return Routed::Prompt(Prompt {
+            text: text.to_string(),
+        });
+    };
+    let token = body
+        .split(is_py_space)
+        .find(|s| !s.is_empty())
+        .unwrap_or("");
+    if !token.is_empty() && !is_name(token) {
+        return Routed::Prompt(Prompt {
+            text: text.to_string(),
+        }); // a path or other text that merely starts with a slash
+    }
+    if token.is_empty() {
+        return rejected(Reason::Unknown, "", Vec::new());
+    }
+    // Python slices the unstripped body by the token's length in characters; the token is ASCII, so that is its byte length,
+    // but leading whitespace can be wider. Skipping chars keeps the quirk: "/ mode plan" gives the args "e plan".
+    let rest = body
+        .char_indices()
+        .nth(token.len())
+        .map_or("", |(i, _)| &body[i..]);
+    let args = py_strip(rest);
+    let lowered = token.to_ascii_lowercase();
+    if LOCAL_COMMANDS.contains(&lowered.as_str()) {
+        return Routed::Local(Local {
+            name: lowered,
+            args: args.to_string(),
+        });
+    }
+    if terminal_commands.contains(&token) {
+        return rejected(Reason::Interactive, token, Vec::new());
+    }
+    if harness_commands.contains(&token) {
+        let text = if args.is_empty() {
+            format!("/{token}")
+        } else {
+            format!("/{token} {args}")
+        };
+        return Routed::Harness(Harness {
+            name: token.to_string(),
+            args: args.to_string(),
+            text,
+        });
+    }
+    let known: BTreeSet<&str> = harness_commands
+        .iter()
+        .chain(LOCAL_COMMANDS.iter())
+        .copied()
+        .collect();
+    let known: Vec<&str> = known.into_iter().collect();
+    rejected(Reason::Unknown, token, close_matches(token, &known))
+}
+
+fn rejected(reason: Reason, detail: &str, suggestions: Vec<String>) -> Routed {
+    Routed::Rejected(Rejected {
+        reason,
+        detail: detail.to_string(),
+        suggestions,
     })
 }
 
@@ -457,6 +634,139 @@ mod tests {
             ratio(&chars(&a100b), &chars(&a199b)),
             0.671_096_345_514_950_1
         );
+    }
+
+    #[test]
+    fn ratio_matches_python_on_random_short_pairs() {
+        let cases: [(&str, &str, f64); 40] = [
+            ("cbbccaac", "ccaabbaa", 0.5),
+            ("ccacbbccc", "cac", 0.5),
+            ("aa", "acab", 0.6666666666666666),
+            ("bcacac", "bacab", 0.7272727272727273),
+            ("bcacb", "acbaac", 0.5454545454545454),
+            ("ba", "baaca", 0.5714285714285714),
+            ("aabb", "baccacb", 0.5454545454545454),
+            ("abbaba", "aca", 0.4444444444444444),
+            ("a", "baccabca", 0.2222222222222222),
+            ("bcb", "bb", 0.8),
+            ("abcb", "a", 0.4),
+            ("bcc", "aa", 0.0),
+            ("bbac", "bbaaaa", 0.6),
+            ("acbb", "acbcabac", 0.6666666666666666),
+            ("bac", "caac", 0.5714285714285714),
+            ("acbbcabaa", "ac", 0.36363636363636365),
+            ("accbb", "cbbcaca", 0.5),
+            ("abc", "ba", 0.4),
+            ("caab", "baaaabb", 0.5454545454545454),
+            ("caababbcc", "cacaabbcb", 0.6666666666666666),
+            ("a", "ba", 0.6666666666666666),
+            ("baaab", "bcacccabb", 0.5714285714285714),
+            ("cb", "ba", 0.5),
+            ("caccbbca", "aa", 0.4),
+            ("bb", "bcccbb", 0.5),
+            ("caccabca", "aacabccb", 0.625),
+            ("abbac", "cabc", 0.6666666666666666),
+            ("babbcbac", "aabacba", 0.6666666666666666),
+            ("abb", "c", 0.0),
+            ("ba", "bb", 0.5),
+            ("abbcc", "cbccbbaa", 0.46153846153846156),
+            ("caccb", "bccaca", 0.5454545454545454),
+            ("baabaaa", "ba", 0.4444444444444444),
+            ("ccbacaabb", "cab", 0.5),
+            ("caaabbccc", "cabcaabcb", 0.5555555555555556),
+            ("bba", "b", 0.5),
+            ("cccbbbcaa", "aa", 0.36363636363636365),
+            ("abcbbca", "caabbc", 0.6153846153846154),
+            ("bbaaaba", "cbc", 0.2),
+            ("bac", "ccbbccaab", 0.3333333333333333),
+        ];
+        for (a, b, want) in cases {
+            assert_eq!(ratio(&chars(a), &chars(b)), want, "{a:?} {b:?}");
+        }
+    }
+
+    #[test]
+    fn ratio_matches_python_on_long_pairs_with_popular_characters() {
+        // b has 200 or more chars, so its frequent characters leave the index and only the extension steps can match them.
+        let cases: [(&str, &str, f64); 12] = [
+            (
+                "azxxababaabbazbbbaababzbzaabbaaababbbbzaaaaaabbbbaaxaabbbabbbaaabyaa",
+                "abbzazbababaabbbbbaaxaabbbabbbaaabyaaaabbbaabybababaabxayabbbaabbzaababbaabbbaababzbzaabbaaababbbbzaaaaaabbbbbbaabbababaazxxababaabbazbbbaaaaaababaxbbbaababababbabbbaazbbababbbaabbabaabbaaabbabbababbbbaabbbzbabxbbbbx",
+                0.16901408450704225,
+            ),
+            (
+                "abbaabbbaabaaaabbyabababyababaabbaaxbaaaabbaabayaaabxabbbbxaabby",
+                "aaababbbbbaaayzaabybababaaaaabbaabbaybbzbabaabaaaxbzbaaabbbaaabbaaaabxabbbbxaabbbaabbaazzaaaabbbaaabbaxbbaabababaaaabaabbbbbbabbaabbbabbyabxzzbabaabaaabbaabbbaabaaaabbyababaabbaaxbaaaabbaabaaxbbabbbaabbbaabaaaabbaaaaab",
+                0.0070921985815602835,
+            ),
+            (
+                "bbaabbbaaaabbabbabbbbbaabbaxabzaaabbbbabaabababaybyzzaabbbababbayyy",
+                "bbaaabababazzbaayabaabxababbbaabbbababbaabbbaaaabbabbabbbbbaabbaxbbbbbbybbaabxbbaxaybbbabbbabbaababbyabbaababbababaaxbbbbaazaxbbbbabbbbaabababayabbaaaaababbbaaabbbbabaabababaybbabbbaazaabbabbbaybaabbbbbbbaaaabbbbaaabaaabba",
+                0.02768166089965398,
+            ),
+            (
+                "bbbbbaabbbaaababxabbaxyaaxbbbbaabbabaxbbbaaababxabbaxyaaxzaaaay",
+                "aaababbbbbyabaaababbaaabbaaaaaaxabbxababbbaaabbbbazbbabbaababxbbbbbbbaabbbaaababxabbaxyaaxzaaaaabbaabxbaaaaababaabaaaaaabababbbbaabbabbaabbaabzbbabyzbabbabbbbaababayabaaabaaabaababaxbababbbbabbbbbabbbbbyaabyaaabbabaaababbbbbbb",
+                0.0,
+            ),
+            (
+                "baabaabaabbabaaxabxaxbbabbbbaaabbbbazbaabaabbyz",
+                "aabbyabazbaxaaabaabaabaabbabaaxabxaxbaaaaxxbbabbbayabbbbaabaaaaaabayyaabaaaaaabyabxabaxxzababbxabzazbbbabxbbaaxbaaaabbbabbbabbbbaaabbbbbbayaabbaayabzbababaazbzabbbzababbbaaabbaaaybxbbaaabbbbbaabbbbzaaabbab",
+                0.0,
+            ),
+            (
+                "baaabbaabaaaazbyabbabbaaabazxbyabbabbaaabaabbaabxyyaxaaaabbaaa",
+                "baababbbaabyzbbaabbbababbbabbbabbbbbbababbbbababbbbyabbbabaababaaaaabaababbabbbabbbazbbbaaaaaabbaaabbabbabaaaababbabaabbbbaaabbbaaaabaaaazbzaaabaxaaaabbaaabbaabaaaazbyabbabbaaabaabbaaaaababaaababbababybbxbxxbaabaab",
+                0.021739130434782608,
+            ),
+            (
+                "bbazxabaayxabbaayabbbababaaazzxbbbazabbaxz",
+                "bbbababbaabaaabybbazxabaabxabbbxaaaaabybabbbbbaabazbbbzbbabababbaabaaabaaaaayaabbaazaaabbbbaaabbbazabbybbbababayaababyybbaaabbbbyaaaaabbybbabbaayabbbababaaabababbbbxbaxybbbbbbzabzbaaababaaaababbbbxzababxbbabyababb",
+                0.01568627450980392,
+            ),
+            (
+                "babbbabbbbzababaaybxbxxabazbzzbbazybabbbyababbbbbabaaaabbbbaaabbaa",
+                "aabababaabbbabzaaaabbbbabbyaababxaabbaazabbbaaxaabbzabzbaaazbaaabbababbababxbaaaabbaabbaababbaabbxyaababaababbbbbabaaaabbbbaaabbabyaaaabbbazybabbbaxzbabbaaabbaabaaaabxaababbbabbbabbbbzababaaybxbxxabaababbabaaababbba",
+                0.0,
+            ),
+            (
+                "abaaaaaabbzbzxaaaabbbaabxyaxbxxayabaaabababz",
+                "babbaaaabaabababaaababazbaabaaaaaabbaaabbbaabbaabaybbabaaababaababbaaybbaabybbabbbaaaaxbaybybababbaxbbbbbbabbbbbbbbaaaabxxayabaaabababaabababaaaabbbaabaaaabbbabbbbbaabababbbabbybaaayababaaaaaabbbaaaaabaabbabbbbbabaababaxabaazbb",
+                0.02214022140221402,
+            ),
+            (
+                "yaabbabaazbbzzzbabbbbbabbabaababaabayxbazbbbabazby",
+                "bbabbbbbabbabaababaabaabbybbbaybaayabbbaabaaabbabaabaaaabyzbbbaabbbbbabyaabbabaazbbbabazbbbbabaaaabaabbxzbyabaazabababaxbbaaxababbabbbabyzaazaabbabaabbabbbazbbbaxbbbxbabaaaayaaazbabaabaaababbbabbbbaababbabbzabaaaaabababa",
+                0.0,
+            ),
+            (
+                "bbabbaabbbxbabyxxaaabaabaaaaabzaazabaxaabbaxbbababaayabaabaaaay",
+                "bbbybbaababaabbzbbabbaabbbxbabybaxaaaaabbxxbbababaayabaabaaaaabzaazabaxaabbaaaayabbbbababbabbaababaaaaabaaxaaaabbaababbazaabazbaabaabbbbbabbbabaabbbbaxxaabbabbbbbbabaaaxaababybbaabbabaabaaabbbaxbbazbb",
+                0.015209125475285171,
+            ),
+            (
+                "baaabbabbbbyaxaaabbbaaabbaabbaaaaaabbxbbbbbzbbbbabababbaaba",
+                "axbbabbzzabbababzbaabbaaazxaabbbababbaaaabaaaxbbzabazabayaaabyaxaaabbbaaabbaabbabbbbbaaybzaaaaabbxbbbbbzbbbbabababbaababybababbxbbbabbbybababababaaaabababbbaaabbabbbbabaababybbbabbababxbxaabaxbbbbabbbabaabyaabbbybbazbbaa",
+                0.0,
+            ),
+        ];
+        for (a, b, want) in cases {
+            assert_eq!(ratio(&chars(a), &chars(b)), want);
+        }
+    }
+
+    #[test]
+    fn ratio_matches_the_block_to_the_right_of_a_long_block() {
+        // The longest block "abc" sits at a[3..6] with another match "rst" after it; Python gives 0.8.
+        assert_eq!(ratio(&chars("qqqabcrst"), &chars("abcrst")), 0.8);
+    }
+
+    #[test]
+    fn ratio_extends_a_rare_match_through_popular_characters_both_ways() {
+        // "x" is the only indexed character of b; the 30 "a" on each side are found by the extension steps. Python gives 0.4341...
+        let a = format!("{}x{}", "a".repeat(30), "a".repeat(30));
+        let b = format!("{}x{}", "a".repeat(100), "a".repeat(119));
+        assert_eq!(ratio(&chars(&a), &chars(&b)), 0.434_163_701_067_615_65);
     }
 
     fn close(word: &str, possibilities: &[&str]) -> Vec<String> {
