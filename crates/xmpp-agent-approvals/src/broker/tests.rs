@@ -773,7 +773,7 @@ mod exactness {
 
     #[test]
     fn split_id_should_match_python_when_the_id_is_before_or_after_the_text() {
-        let cases: [(&str, (Option<&str>, &str)); 16] = [
+        let cases: [(&str, (Option<&str>, &str)); 20] = [
             ("#a1 1", (Some("a1"), "1")),
             ("#a1\u{1f}1", (Some("a1"), "1")),
             ("#a1\u{a0}1", (Some("a1"), "1")),
@@ -790,6 +790,10 @@ mod exactness {
             ("#\u{e9}1 1", (None, "#\u{e9}1 1")),
             ("# a1", (None, "# a1")),
             ("#\u{663} 1", (None, "#\u{663} 1")),
+            ("1 #a-b", (None, "1 #a-b")),
+            ("1#a", (None, "1#a")),
+            ("#a-b 1", (None, "#a-b 1")),
+            ("x #", (None, "x #")),
         ];
         for (text, expected) in cases {
             assert_eq!(split_id(text), expected, "{text:?}");
@@ -1548,5 +1552,39 @@ mod exactness {
         let (mut broker, _) = make();
         bash(&mut broker);
         assert_eq!(format!("{broker:?}"), "Broker { pending: 1, .. }");
+    }
+
+    #[test]
+    fn as_str_should_give_the_python_names_when_a_kind_or_behavior_is_printed() {
+        assert_eq!(
+            (Behavior::Allow.as_str(), Behavior::Deny.as_str()),
+            ("allow", "deny")
+        );
+        let kinds = [
+            (ReplyKind::Decided, "decided"),
+            (ReplyKind::Next, "next"),
+            (ReplyKind::NotAReply, "not_a_reply"),
+            (ReplyKind::Forbidden, "forbidden"),
+            (ReplyKind::UnknownRequest, "unknown_request"),
+            (ReplyKind::Ambiguous, "ambiguous"),
+            (ReplyKind::Invalid, "invalid"),
+        ];
+        for (kind, name) in kinds {
+            assert_eq!(kind.as_str(), name);
+        }
+        let reasons = [
+            (Reason::Approved, "approved"),
+            (Reason::ApprovedSession, "approved_session"),
+            (Reason::Remembered, "remembered"),
+            (Reason::Denied, "denied"),
+            (Reason::Timeout, "timeout"),
+            (Reason::Shutdown, "shutdown"),
+            (Reason::TooMany, "too_many"),
+            (Reason::Malformed, "malformed"),
+            (Reason::Answered, "answered"),
+        ];
+        for (reason, name) in reasons {
+            assert_eq!(reason.as_str(), name);
+        }
     }
 }
