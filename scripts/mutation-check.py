@@ -65,21 +65,67 @@ MUTATIONS = [
     ("xmpp_agent_common/redact", "edit shows old text", "(replace {len(g('old_string'))} chars", "(replace {g('old_string')}"),
     ("xmpp_agent_common/redact", "cut ignores the limit", "    if len(text) <= max_chars:\n        return text\n", "    return text\n"),
     ("xmpp_agent_common/redact", "per-argument values not redacted", "_cut(redact(_value(v)), 80)", "_cut(_value(v), 80)"),
+    # ci: merge gate
+    ("ci/merge_gate", "failure counts as green", 'GREEN = frozenset({"success", "skipped"})', 'GREEN = frozenset({"success", "skipped", "failure"})'),
+    ("ci/merge_gate", "skipped counts as red", 'GREEN = frozenset({"success", "skipped"})', 'GREEN = frozenset({"success"})'),
+    ("ci/merge_gate", "cancelled counts as green", 'GREEN = frozenset({"success", "skipped"})', 'GREEN = frozenset({"success", "skipped", "cancelled"})'),
+    ("ci/merge_gate", "no jobs passes", "if not isinstance(needs, dict) or not needs:", "if not isinstance(needs, dict):"),
+    ("ci/merge_gate", "the last job decides", "        ok = ok and green\n", "        ok = green\n"),
+    ("ci/merge_gate", "exit code always zero", "    return 0 if ok else 1\n", "    return 0\n"),
+    ("ci/merge_gate", "bad json passes", "    except (TypeError, ValueError):\n        print(\"merge gate: NEEDS_JSON is missing or not JSON, failing closed\", file=sys.stderr)\n        return 1\n",
+     "    except (TypeError, ValueError):\n        return 0\n"),
+    ("ci/merge_gate", "a malformed entry is read as green", "    return entry.get(\"result\") if isinstance(entry, dict) else None", "    return entry.get(\"result\") if isinstance(entry, dict) else \"success\""),
+    # ci: scrub check
+    ("ci/scrub", "domain rule off", '("internal-domain", re.compile(r"kauki\\.xyz", re.IGNORECASE)),', '("internal-domain", re.compile(r"neverneverxyz", re.IGNORECASE)),'),
+    ("ci/scrub", "10.x range off", 'rf"10\\.{_OCTET}', 'rf"11\\.{_OCTET}'),
+    ("ci/scrub", "192.168 range off", 'rf"|192\\.168\\.', 'rf"|192\\.169\\.'),
+    ("ci/scrub", "172.16 range too narrow", "172\\.(?:1[6-9]|2\\d|3[01])", "172\\.(?:1[6-9])"),
+    ("ci/scrub", "mesh range off", "100\\.(?:6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])", "100\\.(?:6[4-9])"),
+    ("ci/scrub", "link-local off", 'rf"|169\\.254\\.', 'rf"|169\\.255\\.'),
+    ("ci/scrub", "number-boundary guard dropped", 'r"(?<![\\d.])(?:"', 'r"(?:"'),
+    ("ci/scrub", "trailing boundary dropped", 'r")(?![\\d.]*\\d)")),', 'r")")),'),
+    ("ci/scrub", "home path rule off", '("home-path", re.compile(r"/(?:Users|home)/', '("home-path", re.compile(r"/(?:Nobody|home1)/'),
+    ("ci/scrub", "runner exemption dropped", "(?!runner\\b|user\\b|example\\b)", "(?!user\\b|example\\b)"),
+    ("ci/scrub", "personal rule case-sensitive", "\\.net\"]), re.IGNORECASE)),", "\\.net\"]))),"),
+    ("ci/scrub", "line numbers start at 0", "enumerate(text.splitlines(), 1)", "enumerate(text.splitlines(), 0)"),
+    ("ci/scrub", "license is scanned", '_SKIP_NAMES = frozenset({"LICENSE"})', '_SKIP_NAMES = frozenset()'),
+    ("ci/scrub", "binary files are scanned", '        if b"\\0" in data:\n            continue  # binary\n', ""),
+    ("ci/scrub", "exit code always zero", "    if problems:\n        print(f\"\\nscrub:", "    if False:\n        print(f\"\\nscrub:"),
 ]
 
 def run(module, label, old, new):
-    path = os.path.join(ROOT, "src", module + ".py")
-    src = open(path).read()
+    rel = module + ".py" if module.startswith("ci/") else os.path.join("src", module + ".py")
+    src = open(os.path.join(ROOT, rel)).read()
     if src.count(old) != 1:
         return f"BROKEN {label}: pattern found {src.count(old)} times"
     d = tempfile.mkdtemp()
-    shutil.copytree(os.path.join(ROOT, "src"), d, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
-    open(os.path.join(d, module + ".py"), "w").write(src.replace(old, new))
-    r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", "."], cwd=ROOT,
-                       env={"PYTHONPATH": d, "PATH": os.environ["PATH"]}, capture_output=True, text=True)
+    shutil.copytree(ROOT, d, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", ".git", ".venv"))
+    open(os.path.join(d, rel), "w").write(src.replace(old, new))
+    subprocess.run(["git", "init", "-q", d], check=True)
+    subprocess.run(["git", "-C", d, "add", "-A"], check=True, capture_output=True)  # the scrub tests scan tracked files
+    r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", "."], cwd=d,
+                       env={"PYTHONPATH": os.path.join(d, "src"), "PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "")},
+                       capture_output=True, text=True)
     shutil.rmtree(d)
     return ("CAUGHT " if r.returncode else "MISSED ") + label
 
+def baseline():
+    """The unmutated suite must pass, or every mutation would look caught."""
+    d = tempfile.mkdtemp()
+    shutil.copytree(ROOT, d, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", ".git", ".venv"))
+    subprocess.run(["git", "init", "-q", d], check=True)
+    subprocess.run(["git", "-C", d, "add", "-A"], check=True, capture_output=True)
+    r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", "."], cwd=d,
+                       env={"PYTHONPATH": os.path.join(d, "src"), "PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "")},
+                       capture_output=True, text=True)
+    shutil.rmtree(d)
+    return r
+
+
+base = baseline()
+if base.returncode != 0:
+    print("BASELINE FAILS: the unmutated tests do not pass, so no mutation result means anything.\n" + base.stderr[-1500:])
+    sys.exit(2)
 results = [run(*m) for m in MUTATIONS]
 print("\n".join(results))
 bad = [r for r in results if not r.startswith("CAUGHT")]

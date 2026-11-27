@@ -11,6 +11,9 @@ import scrub  # noqa: E402
 DOMAIN = "kauki" + ".xyz"
 HOST = "chat.apps.int." + DOMAIN
 PRIV = [".".join(map(str, p)) for p in ((192, 168, 1, 241), (10, 244, 0, 1), (172, 16, 5, 4), (172, 31, 255, 1), (100, 64, 0, 3), (100, 127, 1, 1), (169, 254, 1, 1))]
+NAME = "tee" + "bor"
+HOMES = "/Us" + "ers/someone"
+HOMEL = "/ho" + "me/someone"
 OK_IPS = [".".join(map(str, p)) for p in ((192, 0, 2, 10), (198, 51, 100, 7), (203, 0, 113, 9), (8, 8, 8, 8), (172, 32, 0, 1), (172, 15, 0, 1), (100, 63, 0, 1), (100, 128, 0, 1), (127, 0, 0, 1))]
 
 
@@ -35,18 +38,26 @@ class FindProblems(unittest.TestCase):
             self.assertNotIn("private-address", rules(f"host {ip}"), ip)
 
     def test_an_address_inside_a_longer_number_is_not_flagged(self):
-        self.assertEqual(rules("version 1.10.244.0.1.2 and 3.192.168.1.2.3"), set())
+        # leading side only: a digit and a dot come before, nothing after
+        self.assertEqual(rules("version 3." + PRIV[0]), set())
+        # trailing side only: nothing before, more groups after
+        self.assertEqual(rules("version " + PRIV[1] + ".2"), set())
+        self.assertEqual(rules("version " + PRIV[0] + ".5.6"), set())
+        # an address next to punctuation is still found
+        self.assertIn("private-address", rules(f"({PRIV[0]})"))
+        self.assertIn("private-address", rules(f"host={PRIV[0]}:5223"))
+        self.assertIn("private-address", rules(f"see {PRIV[0]}."))
 
     def test_home_directories(self):
-        self.assertIn("home-path", rules("/Us" + "ers/someone/Fun/x"))
-        self.assertIn("home-path", rules("see /ho" + "me/someone/.config"))
+        self.assertIn("home-path", rules(HOMES + "/Fun/x"))
+        self.assertIn("home-path", rules(f"see {HOMEL}/.config"))
 
     def test_ci_and_placeholder_home_paths_are_fine(self):
-        for text in ("/home/runner/work/x", "/home/user/project", "/Users/example/project"):
+        for text in ("/ho" + "me/runner/work/x", "/ho" + "me/user/project", "/Us" + "ers/example/project"):
             self.assertNotIn("home-path", rules(text), text)
 
     def test_personal_names_and_organisations(self):
-        for word in ("tee" + "bor", "cso" + "ka", "hop" + "rnet", "." + "ts" + ".net"):
+        for word in (NAME, "cso" + "ka", "hop" + "rnet", "." + "ts" + ".net"):
             self.assertIn("personal", rules(f"owner {word.upper()}"), word)
 
     def test_each_problem_has_its_line_number(self):
@@ -54,7 +65,7 @@ class FindProblems(unittest.TestCase):
         self.assertEqual([(n, r) for n, r, _ in found], [(3, "private-address")])
 
     def test_several_problems_on_one_line_are_all_reported(self):
-        got = rules(f"{HOST} at {PRIV[0]} in " + "/Us" + "ers/someone")
+        got = rules(f"{HOST} at {PRIV[0]} in {HOMES}")
         self.assertEqual(got, {"internal-domain", "private-address", "home-path"})
 
     def test_a_snippet_is_returned_for_the_report(self):
@@ -80,7 +91,7 @@ class Scan(unittest.TestCase):
         self.assertEqual([(p, n, r) for p, n, r, _ in problems], [("docs/a.md", 1, "private-address")])
 
     def test_binary_files_and_the_license_are_skipped(self):
-        d = self.make_repo({"img.png": b"\x89PNG\x00" + PRIV[0].encode(), "LICENSE": "Copyright " + "tee" + "bor" + "\n", "a.md": "ok\n"})
+        d = self.make_repo({"img.png": b"\x89PNG\x00" + PRIV[0].encode(), "LICENSE": f"Copyright {NAME}\n", "a.md": "ok\n"})
         self.assertEqual(scrub.scan(d), [])
 
     def test_untracked_files_are_ignored(self):
