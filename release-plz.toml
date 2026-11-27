@@ -23,3 +23,8 @@ git_tag_name = "v{{ version }}"
 name = "xmpp-agent-common"
 version_group = "xmpp-agent-tools"
 changelog_path = "CHANGELOG.md"
+
+[[package]]
+name = "xmpp-agent-approvals"
+version_group = "xmpp-agent-tools"
+changelog_path = "CHANGELOG.md"

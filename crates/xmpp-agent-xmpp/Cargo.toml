@@ -1,0 +1,19 @@
+[package]
+name = "xmpp-agent-xmpp"
+version = "0.1.0"
+description = "The XMPP layer of the agent client: chat, rooms, archive, uploads, reconnection"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+futures.workspace = true
+reqwest.workspace = true
+sasl.workspace = true
+tokio.workspace = true
+tokio-xmpp.workspace = true
+xmpp-parsers.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "process", "net", "io-util"] }
