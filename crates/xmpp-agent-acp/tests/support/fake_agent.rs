@@ -74,7 +74,13 @@ fn turn(id: &Value, prompt: &str, rx: &Receiver<Value>) {
                     let o = &m["result"]["outcome"];
                     match o["outcome"].as_str() {
                         Some("selected") => {
-                            text(&format!("allowed:{}", o["optionId"].as_str().unwrap()))
+                            let id = o["optionId"].as_str().unwrap();
+                            let verdict = if id.starts_with("reject") {
+                                "rejected"
+                            } else {
+                                "allowed"
+                            };
+                            text(&format!("{verdict}:{id}"))
                         }
                         _ => text("denied"),
                     }
@@ -91,11 +97,11 @@ fn turn(id: &Value, prompt: &str, rx: &Receiver<Value>) {
             loop {
                 n += 1;
                 text(&format!("chunk{n} "));
-                if let Some(m) = next(rx, Duration::from_millis(20)) {
-                    if m["method"] == "session/cancel" {
-                        stop = "cancelled";
-                        break;
-                    }
+                if let Some(m) = next(rx, Duration::from_millis(20))
+                    && m["method"] == "session/cancel"
+                {
+                    stop = "cancelled";
+                    break;
                 }
                 if n > 1500 {
                     break;
@@ -116,10 +122,10 @@ fn main() {
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines() {
             let Ok(line) = line else { break };
-            if let Ok(v) = serde_json::from_str(&line) {
-                if tx.send(v).is_err() {
-                    break;
-                }
+            if let Ok(v) = serde_json::from_str(&line)
+                && tx.send(v).is_err()
+            {
+                break;
             }
         }
     });
