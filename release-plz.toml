@@ -1,0 +1,25 @@
+# release-plz configuration. .github/workflows/release.yaml runs it on every push to main:
+#
+#   release-plz release-pr  opens or updates a PR that bumps versions and changelogs from the conventional commits. Merge it to cut a
+#                           release.
+#   release-plz release     tags the merge commit and creates the GitHub release; release.yaml then builds and attaches the binaries.
+#
+# Release model: one version for the whole workspace, one tag `v<version>`, one GitHub release. No crates.io publishing: `publish = false`
+# here and in Cargo.toml. `git_only` makes release-plz read the previous version from the git tags, because nothing is published to a
+# registry that it could read it from.
+
+[workspace]
+git_release_enable = true
+git_tag_enable = true
+git_release_generate_notes = true
+git_only = true
+publish = false
+# A release is an intentional version bump, not lockfile churn.
+dependencies_update = false
+git_tag_name = "v{{ version }}"
+
+# Crates share one version and one changelog, so there is a single tag and release. Add every new crate to this group.
+[[package]]
+name = "xmpp-agent-common"
+version_group = "xmpp-agent-tools"
+changelog_path = "CHANGELOG.md"

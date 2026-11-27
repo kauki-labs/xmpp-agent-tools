@@ -1,0 +1,95 @@
+# Releases are prepared but off until the owner turns them on: every job is gated on the repository variable ENABLE_RELEASES. While it
+# is unset nothing is opened, tagged or released. See docs/release.md.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Never run two releases at once, and never cancel one while it publishes.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  release-plz:
+    name: release-plz
+    if: vars.ENABLE_RELEASES == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write # tags and the GitHub release
+      pull-requests: write # the release PR
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          # release-plz pushes the release branch with this credential.
+          persist-credentials: true # zizmor: ignore[artipacked]
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # The owner adds the Nix binary cache step here later (see pr.yaml).
+      - name: Open the release PR
+        # A PR opened with GITHUB_TOKEN does not trigger pr.yaml. Before merging it, push an empty commit or use "Update branch" so
+        # the required `Merge gate` check runs.
+        run: nix develop -c release-plz release-pr --git-token "$GITHUB_TOKEN"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag and release
+        id: release
+        run: |
+          set -euo pipefail
+          nix develop -c release-plz release --git-token "$GITHUB_TOKEN" -o json | tee release.json
+          # `releases` is empty when this push did not merge a release PR.
+          echo "tag=$(python3 -c 'import json; r = json.load(open("release.json")).get("releases", []); print(r[0]["tag"] if r else "")')" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # A tag or release made with GITHUB_TOKEN does not start other workflows, so the binaries are built here, in the same run.
+  binaries:
+    name: binaries (${{ matrix.system }})
+    needs: release-plz
+    if: needs.release-plz.outputs.tag != ''
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: write # upload to the release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { system: x86_64-linux, runner: ubuntu-24.04 }
+          - { system: aarch64-linux, runner: ubuntu-24.04-arm }
+          - { system: aarch64-darwin, runner: macos-15 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-plz.outputs.tag }}
+          persist-credentials: false
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Build, package and upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-plz.outputs.tag }}
+          SYSTEM: ${{ matrix.system }}
+        run: |
+          set -euo pipefail
+          nix build -L .#default
+          if ! ls result/bin/* >/dev/null 2>&1; then
+            echo "::notice::the workspace builds no binaries yet; nothing to attach for $SYSTEM"
+            exit 0
+          fi
+          archive="xmpp-agent-tools-${TAG}-${SYSTEM}.tar.gz"
+          tar -C result/bin -czf "$archive" .
+          shasum -a 256 "$archive" > "$archive.sha256"
+          gh release upload "$TAG" "$archive" "$archive.sha256" --clobber
