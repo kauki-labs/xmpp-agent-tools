@@ -55,3 +55,19 @@ refused. The password comes from `XAT_PASSWORD`, or from the file named by `pass
   the XMPP layer is silent. A turn that ends in an error is reported as such.
 - The operational log is one JSON object per line: starts, stops, approvals asked and decided, errors. It holds no message body and
   no secret.
+
+## Test against a real Prosody
+
+`crates/xmpp-agent/tests/prosody.rs` runs the real binary against a throwaway Prosody with direct TLS and a throwaway CA, with the
+scripted fake agent of the ACP crate, and a second XMPP client as the human. It is skipped unless `XAT_TEST_PROSODY_BIN` points at a
+`prosody` binary (its `prosodyctl` sits next to it); `nix flake check` skips it.
+
+```sh
+XAT_TEST_PROSODY_BIN=/path/to/prosody cargo test -p xmpp-agent --test prosody -- --nocapture
+```
+
+One test runs every step: the binary starts and answers `/status`; a prompt gets its answer and a tool line; a permission is approved
+with 1 and another denied with 3; a stranger gets no reply; `/stop` cancels a turn; after a Prosody restart (stream management on) a
+new prompt still works; SIGTERM stops the binary with exit 0 and the operational log is complete. The XMPP crate's test uses the same
+server setup. On macOS nixpkgs marks `prosody` as unsupported; see the comment at the top of the infra repo's
+`scripts/prosody-dmrecord-test.sh` for the build flags.
