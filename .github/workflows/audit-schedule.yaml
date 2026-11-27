@@ -1,0 +1,32 @@
+# Weekly supply-chain audit. The Cargo.lock is checked against a fresh clone of the RustSec advisory database, so a new advisory shows
+# up here without waiting for a pull request. A failing run blocks nothing: it is a red run in the Actions tab.
+name: Scheduled audit
+
+on:
+  schedule:
+    - cron: "17 4 * * 1" # Mondays, at an off-hour minute to avoid the top-of-hour pile-up
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: audit-schedule
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: cargo audit against the live RustSec database
+        run: nix run .#audit

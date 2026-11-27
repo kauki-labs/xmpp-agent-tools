@@ -64,9 +64,26 @@
           # The workspace build. It holds the libraries only; the binaries land here when they exist.
           packages.default = xat.package;
 
+          # `nix run .#audit`: cargo audit against a fresh clone of the RustSec database (the weekly workflow runs it).
+          apps.audit = {
+            type = "app";
+            program = pkgs.lib.getExe (
+              pkgs.writeShellApplication {
+                name = "audit";
+                runtimeInputs = [ pkgs.cargo-audit ];
+                text = "cargo-audit audit";
+              }
+            );
+          };
+
           devShells.default = xat.craneLib.devShell {
             checks = config.checks;
-            packages = [ config.treefmt.build.wrapper ] ++ xat.devShellPackages;
+            packages = [
+              config.treefmt.build.wrapper
+            ]
+            ++ xat.devShellPackages
+            # nixpkgs marks release-plz broken on darwin; the release job runs on Linux.
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.release-plz ];
           };
         };
     };
