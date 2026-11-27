@@ -61,7 +61,7 @@
             fmt = config.treefmt.build.check inputs.self;
           };
 
-          # The workspace build. It holds the libraries only; the binaries land here when they exist.
+          # The workspace build: the libraries and the binaries (`xmpp-agent-rooms`).
           packages.default = xat.package;
 
           # `nix run .#audit`: cargo audit against a fresh clone of the RustSec database (the weekly workflow runs it).
