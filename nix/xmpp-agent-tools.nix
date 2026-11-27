@@ -26,6 +26,31 @@ let
   withDeps = commonArgs // {
     inherit cargoArtifacts;
   };
+
+  # The Python side (the CI scripts and the tools not yet ported). Standard library only, plus coverage for the floor.
+  pythonSrc = pkgs.lib.cleanSource ../.;
+  python = pkgs.python3.withPackages (ps: [ ps.coverage ]);
+  # Every Python check copies the source to a writable directory first: the tests write caches, and the scrub and mutation
+  # checks need a git repository (they scan tracked files).
+  pythonCheck =
+    name: nativeBuildInputs: script:
+    pkgs.runCommand "xmpp-agent-tools-${name}"
+      {
+        nativeBuildInputs = [
+          python
+          pkgs.git
+        ]
+        ++ nativeBuildInputs;
+        PYTHONDONTWRITEBYTECODE = "1";
+      }
+      ''
+        cp -r ${pythonSrc} work
+        chmod -R u+w work
+        cd work
+        git init -q . && git add .
+        ${script}
+        touch $out
+      '';
 in
 {
   inherit rustToolchain craneLib;
@@ -36,6 +61,27 @@ in
       withDeps // { cargoClippyExtraArgs = "--all-targets -- --deny warnings"; }
     );
     test = craneLib.cargoTest withDeps;
+
+    # Unit tests with branch coverage and a floor of 90%.
+    py-tests = pythonCheck "py-tests" [ ] ''
+      PYTHONPATH=src python -m coverage run --branch --source=src -m unittest discover -s tests -t .
+      python -m coverage report -m --fail-under=90
+    '';
+    # Every one-line mutation must fail the tests.
+    mutation = pythonCheck "mutation" [ ] "python scripts/mutation-check.py";
+    # No internal hostnames, private addresses, home paths or personal names in this public repository.
+    scrub = pythonCheck "scrub" [ ] "python ci/scrub.py";
+    # Workflow lint. zizmor runs offline: its online audits need a token and the network.
+    workflows =
+      pythonCheck "workflows"
+        [
+          pkgs.actionlint
+          pkgs.zizmor
+        ]
+        ''
+          actionlint .github/workflows/*.yaml
+          zizmor --offline --format plain .github/workflows
+        '';
   };
 
   # The workspace build. It holds the libraries only; the binaries land here when they exist.

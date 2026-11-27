@@ -1,0 +1,32 @@
+# After a merge: every flake check on every system this runner can evaluate. Pull requests run the same checks as separate jobs
+# (pr.yaml); this catches anything the path-based skipping let through.
+name: Main
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  flake-check:
+    name: flake-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # The owner adds the Nix binary cache step here later (see pr.yaml).
+      - name: nix flake check
+        run: nix flake check -L
