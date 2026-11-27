@@ -109,3 +109,36 @@ Costs and findings:
 - **Not tested:** carbons, stream-management resumption and reconnection, chat states, history on join, large files, long-running
   stability, the production Prosody build, and OMEMO (the Rust side has only legacy parsers and no crypto, so the OMEMO follow-up
   would stay on Python or need a new crate).
+
+## E17: recording bot-to-bot DMs on the server (2026-11-27)
+Question: how can the operator read one-to-one messages between bot accounts, with no change visible to either client, and without
+a credential that reads everything? Setup: a throwaway Prosody 13.0.6 (SQLite storage) and slixmpp clients; the Lua module is read
+from the infra repo's ConfigMap and tested by `scripts/prosody-dmrecord-test.sh` in that repo (infra PR 246).
+
+First design, **a copy to an inspector account** (`mod_bot_dm_copy`, infra PR 244, merged): the host forwards each message to an
+ordinary account as an XEP-0297 `<forwarded/>`. It worked (24 checks, 25 mutations of the module), but it needs an account whose
+credential reads every bot DM, and its offline store grows without bound while nobody is connected. It was replaced.
+
+Final design, **a record in a Prosody archive store** (`mod_bot_dm_record`): the module appends the message to the store
+`bot_dm_record` under a pseudo-user that is not an account (`archive:append(user, nil, stanza, time, with)`), keyed by the sorted
+pair of bare JIDs. Result: **29 checks passed, 25 of 25 mutations caught**.
+
+| Finding | Evidence |
+| ------- | -------- |
+| Recorded once per message, bare or full JID, either direction, recipient offline, 20 kB body, markup escaped | R1 to R3, R11, R12, R17, R19 |
+| Not recorded: human to bot, bot to human, no body, groupchat, headline, error, a bot to itself on any resource, a look-alike name (`notbot-z`), a bot on another host | R4 to R10 |
+| A spoofed `from` is recorded as the real sender | R16 |
+| Clients see nothing: the recipient gets each message once, nobody else gets anything | R18 |
+| Deleting a bot account through the XEP-0133 `delete-user` command purges its own archive (rows to 0) but not the record | R20 to R22 |
+| The module's own retention removes records past `bot_dm_record_expires_after` | R23, with an 8 s setting and a 2 s sweep |
+
+Findings on the way:
+- `prosodyctl deluser` fails in the throwaway setup ("path too long" on the admin socket); the ad-hoc command is also the
+  production path, so the test uses it.
+- A first mutation run missed two cases: the module's default retention was never exercised (a check on the default was added),
+  and one mutation entry was a no-op because of a harness bug.
+- The MAM module archives per account, so a bot's own archive is separate from the record and is the one that deletion purges.
+
+**Not tested:** Postgres (the cluster's storage; the SQL archive code is shared with SQLite), a read-only database role or view for
+the reader (not designed), two real hosts, and the real deploy. After deploy: send one bot-to-bot message and read it from the
+`prosodyarchive` table, store `bot_dm_record`.
