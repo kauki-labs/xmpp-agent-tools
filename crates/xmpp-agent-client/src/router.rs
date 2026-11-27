@@ -757,8 +757,11 @@ mod tests {
 
     #[test]
     fn ratio_matches_the_block_to_the_right_of_a_long_block() {
-        // The longest block "abc" sits at a[3..6] with another match "rst" after it; Python gives 0.8.
-        assert_eq!(ratio(&chars("qqqabcrst"), &chars("abcrst")), 0.8);
+        // The first of two equal longest blocks, "abc" at a[4..7], leaves "Yrst" and "Xrst" to match on its right.
+        assert_eq!(
+            ratio(&chars("qqqqabcYrst"), &chars("abcXrst")),
+            0.666_666_666_666_666_6
+        );
     }
 
     #[test]
