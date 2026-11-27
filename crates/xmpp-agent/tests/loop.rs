@@ -89,7 +89,7 @@ async fn a_permission_should_be_asked_in_chat_and_allowed_when_the_approver_answ
     rig.say(ALICE, "ask").await;
     let ask = rig.chat.wait_for(ALICE, "Approval #").await;
     assert!(
-        ask.contains("touch a.txt") || ask.contains("Reply 1"),
+        ask.contains("touch a.txt") && !ask.contains("again in this session"),
         "{ask}"
     );
     rig.say(ALICE, "1").await;
@@ -112,6 +112,7 @@ async fn a_permission_should_be_denied_when_the_approver_answers_3() {
     rig.chat.wait_for(ALICE, "Approval #").await;
     rig.say(ALICE, "3").await;
     rig.chat.wait_for(ALICE, "rejected:reject").await;
+    rig.chat.assert_quiet().await;
     rig.finish().await.expect("clean end");
 }
 
@@ -174,7 +175,8 @@ async fn an_allowed_human_who_is_not_an_approver_should_not_decide_a_request() {
     rig.say(CAROL, "ask").await;
     rig.chat.wait_for(ALICE, "Approval #").await;
     rig.say(CAROL, "1").await;
-    rig.chat.assert_quiet().await;
+    let notice = rig.chat.wait_for(CAROL, "approver").await;
+    assert!(!notice.contains("allowed:"), "{notice}");
     assert!(
         !rig.chat
             .bodies(CAROL)
@@ -359,4 +361,148 @@ async fn the_log_should_hold_starts_and_stops_and_no_message_body() {
     assert!(events.contains(&LogEvent::Stopped), "{events:?}");
     assert!(events.contains(&LogEvent::Started), "{events:?}");
     assert!(!format!("{events:?}").contains("hello"), "{events:?}");
+}
+
+#[tokio::test]
+async fn answer_2_should_allow_once_say_so_and_ask_again_for_the_next_call() {
+    let rig = Rig::start(settings()).await;
+    rig.say(ALICE, "ask").await;
+    rig.chat.wait_for(ALICE, "Approval #a1").await;
+    rig.say(ALICE, "2").await;
+    rig.chat.wait_for(ALICE, "allowed:allow").await;
+    let notice = rig.chat.wait_for(ALICE, "Allowed #a1").await;
+    assert!(!notice.contains("again in this session"), "{notice}");
+    rig.chat.wait_for_state(ALICE, "active").await;
+    rig.say(ALICE, "ask").await;
+    rig.chat.wait_for(ALICE, "Approval #a2").await;
+    rig.finish().await.expect("clean end");
+}
+
+#[tokio::test]
+async fn stop_should_close_a_waiting_approval_and_not_restart_the_work_when_it_would_have_timed_out()
+ {
+    let mut s = settings();
+    s.approval_timeout = Duration::from_secs(1);
+    let rig = Rig::start(s).await;
+    rig.say(ALICE, "ask").await;
+    rig.chat.wait_for(ALICE, "Approval #a1").await;
+    rig.say(ALICE, "/stop").await;
+    rig.chat.wait_for(ALICE, "Stopped.").await;
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    let all = rig.chat.bodies(ALICE).join("\n");
+    assert!(
+        !all.contains("independent") && !all.contains("timed out"),
+        "{all}"
+    );
+    let log = rig.log.events();
+    assert!(
+        log.iter()
+            .any(|e| matches!(e, LogEvent::ApprovalDecided { behavior, .. } if behavior == "deny")),
+        "{log:?}"
+    );
+    rig.say(ALICE, "#a1 1").await;
+    rig.chat.wait_for(ALICE, "no longer pending").await;
+    rig.finish().await.expect("clean end");
+}
+
+#[tokio::test]
+async fn a_late_answer_with_an_id_should_get_the_no_longer_pending_notice_and_not_reach_the_agent()
+{
+    let mut s = settings();
+    s.approval_timeout = Duration::from_secs(1);
+    let rig = Rig::start(s).await;
+    rig.say(ALICE, "ask").await;
+    rig.chat.wait_for(ALICE, "timed out").await;
+    rig.chat.wait_for(ALICE, "independent").await;
+    rig.chat.wait_for_state(ALICE, "active").await;
+    rig.say(ALICE, "#a1 1").await;
+    rig.chat.wait_for(ALICE, "no longer pending").await;
+    rig.chat.assert_quiet().await;
+    assert!(
+        !rig.chat
+            .bodies(ALICE)
+            .iter()
+            .any(|b| b.contains("echo:#a1")),
+        "{:?}",
+        rig.chat.bodies(ALICE)
+    );
+    rig.finish().await.expect("clean end");
+}
+
+#[tokio::test]
+async fn an_approver_who_may_not_talk_to_the_agent_should_still_decide_an_approval() {
+    let mut s = settings();
+    s.allowed = vec![CAROL.to_owned()];
+    s.approvers = vec![ALICE.to_owned()];
+    let rig = Rig::start(s).await;
+    rig.say(CAROL, "ask").await;
+    rig.chat.wait_for(ALICE, "Approval #a1").await;
+    rig.say(ALICE, "1").await;
+    rig.chat.wait_for(CAROL, "allowed:allow").await;
+    rig.say(ALICE, "hello").await;
+    rig.chat.assert_quiet().await;
+    assert!(
+        rig.chat.bodies(ALICE).iter().all(|b| !b.contains("hello")),
+        "{:?}",
+        rig.chat.bodies(ALICE)
+    );
+    rig.finish().await.expect("clean end");
+}
+
+#[tokio::test]
+async fn a_stranger_should_not_decide_an_approval_even_with_the_right_words() {
+    let rig = Rig::start(settings()).await;
+    rig.say(ALICE, "ask").await;
+    rig.chat.wait_for(ALICE, "Approval #a1").await;
+    rig.say(BOB, "1").await;
+    rig.say(BOB, "#a1 1").await;
+    rig.chat.assert_quiet().await;
+    assert!(rig.chat.bodies(BOB).is_empty());
+    assert!(
+        !rig.chat
+            .bodies(ALICE)
+            .iter()
+            .any(|b| b.contains("allowed:"))
+    );
+    rig.say(ALICE, "3").await;
+    rig.chat.wait_for(ALICE, "rejected:reject").await;
+    rig.finish().await.expect("clean end");
+}
+
+#[tokio::test]
+async fn typing_should_go_on_until_the_last_open_turn_ends() {
+    let mut s = settings();
+    s.approval_timeout = Duration::from_secs(1);
+    let rig = Rig::start(s).await;
+    rig.say(ALICE, "ask").await;
+    rig.chat.wait_for(ALICE, "independent").await;
+    rig.chat.wait_for_state(ALICE, "active").await;
+    rig.chat.assert_quiet().await;
+    assert_eq!(
+        rig.chat.states(ALICE),
+        ["composing", "composing", "active"],
+        "one active, after the queued turn"
+    );
+    rig.finish().await.expect("clean end");
+}
+
+#[tokio::test]
+async fn start_should_fail_with_an_error_when_the_agent_does_not_open_a_session_in_time() {
+    let mut s = settings();
+    s.agent_command = "sleep".to_owned();
+    s.agent_args = vec!["30".to_owned()];
+    s.agent_start_timeout = Duration::from_secs(1);
+    let mut session = xmpp_agent::session::Session::new(
+        s,
+        support::FakeChat::default(),
+        support::MemoryLog::default(),
+    );
+    let started = std::time::Instant::now();
+    let outcome = session.start().await;
+    assert!(
+        matches!(outcome, Err(SessionError::Agent(ref text)) if text.contains("timed out")),
+        "{outcome:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
+    session.shutdown().await;
 }

@@ -45,6 +45,16 @@ pub fn pick_option(options: &[PermOption], allow: bool) -> Option<String> {
         .map(|option| option.id.clone())
 }
 
+/// The name of a tool as the approvers see it: the title, or a placeholder when the agent sent none.
+pub fn display_tool(title: &str) -> String {
+    title.to_owned()
+}
+
+/// Make the broker's approval texts true for this loop, which never remembers a call: option 2 allows once.
+pub fn honest_approval_text(text: &str) -> String {
+    text.to_owned()
+}
+
 /// The prompt sent to the agent after an approval timed out, so it can continue with independent work.
 pub fn blocked_prompt(tool: &str) -> String {
     format!(
@@ -202,10 +212,69 @@ mod text {
     }
 
     #[test]
-    fn pick_option_should_fall_back_to_always_when_there_is_no_once() {
+    fn pick_option_should_fall_back_to_reject_always_but_never_to_allow_always() {
         let options = vec![option("aa", "allow_always"), option("ra", "reject_always")];
-        assert_eq!(pick_option(&options, true), Some("aa".to_owned()));
+        assert_eq!(pick_option(&options, true), None);
         assert_eq!(pick_option(&options, false), Some("ra".to_owned()));
+    }
+
+    #[test]
+    fn turn_messages_should_report_a_failed_turn_when_the_stop_reason_is_an_error() {
+        assert_eq!(
+            turn_messages("", "error: model overloaded"),
+            ["The turn failed: model overloaded"]
+        );
+        assert_eq!(
+            turn_messages("partial", "error: boom"),
+            ["partial", "The turn failed: boom"]
+        );
+    }
+
+    #[test]
+    fn turn_messages_should_redact_and_cut_the_error_of_a_failed_turn() {
+        let reason = format!("error: bad token=abcdef123456 {}", "x".repeat(500));
+        let messages = turn_messages("", &reason);
+        assert!(!messages[0].contains("abcdef123456"), "{}", messages[0]);
+        assert!(
+            messages[0].chars().count() <= 220,
+            "{}",
+            messages[0].chars().count()
+        );
+    }
+
+    #[test]
+    fn display_tool_should_name_an_unnamed_tool() {
+        assert_eq!(display_tool("touch a.txt"), "touch a.txt");
+        assert_eq!(display_tool(""), "an unnamed tool");
+        assert_eq!(display_tool("  "), "an unnamed tool");
+    }
+
+    #[test]
+    fn honest_approval_text_should_say_option_2_allows_once() {
+        let broker = "Approval #a1: touch a.txt\nReply 1 to allow once, 2 to allow this exact call again in this session, 3 to deny, or 4 and a note to deny with a reason. It is denied after 10 min without an answer.";
+        let text = honest_approval_text(broker);
+        assert!(!text.contains("again in this session"), "{text}");
+        assert!(
+            text.contains("2 to allow once")
+                && text.contains("touch a.txt")
+                && text.contains("3 to deny"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn honest_approval_text_should_correct_the_notice_of_answer_2() {
+        let text = honest_approval_text("Allowed #a1, and the same call again in this session.");
+        assert!(!text.contains("again in this session"), "{text}");
+        assert!(
+            text.contains("Allowed #a1") && text.contains("once"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn honest_approval_text_should_leave_other_text_alone() {
+        assert_eq!(honest_approval_text("Denied #a1."), "Denied #a1.");
     }
 
     #[test]

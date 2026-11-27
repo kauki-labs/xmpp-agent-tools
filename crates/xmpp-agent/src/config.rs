@@ -13,6 +13,9 @@ pub const DEFAULT_APPROVAL_TIMEOUT_SECS: u64 = 600;
 /// Longest approval timeout accepted, in seconds (one day).
 pub const MAX_APPROVAL_TIMEOUT_SECS: u64 = 86_400;
 
+/// Default time the agent has to open a session, in seconds.
+pub const DEFAULT_AGENT_START_TIMEOUT_SECS: u64 = 60;
+
 /// Port of the direct-TLS XMPP endpoint when a server host is given without a port.
 pub const DEFAULT_SERVER_PORT: u16 = 5223;
 
@@ -116,6 +119,8 @@ pub struct Settings {
     pub approvers: Vec<String>,
     /// Time an approval waits before it is denied.
     pub approval_timeout: Duration,
+    /// Time the agent has to open a session before the start is given up.
+    pub agent_start_timeout: Duration,
     /// Where the operational JSONL log goes; `None` writes none.
     pub log_path: Option<PathBuf>,
 }
@@ -135,6 +140,7 @@ struct FileSettings {
     allowed: Option<Vec<String>>,
     approvers: Option<Vec<String>>,
     approval_timeout_secs: Option<u64>,
+    agent_start_timeout_secs: Option<u64>,
     log_path: Option<String>,
 }
 
@@ -298,6 +304,7 @@ impl Settings {
             allowed,
             approvers,
             approval_timeout: Duration::from_secs(timeout_secs),
+            agent_start_timeout: Duration::from_secs(DEFAULT_AGENT_START_TIMEOUT_SECS),
             log_path: set(&env.log_path)
                 .or_else(|| raw.log_path.clone())
                 .map(PathBuf::from),
@@ -699,18 +706,89 @@ log_path = "/var/log/xat.jsonl"
     }
 
     #[test]
-    fn spawn_config_should_carry_the_command_the_entrypoint_and_the_directory() {
+    fn spawn_config_should_run_the_agent_through_env_with_the_secrets_removed() {
         let file = format!(
             "{MINIMAL}agent_command = \"my-agent\"\nagent_args = [\"--acp\"]\ncwd = \"/home/user/work\"\nentrypoint = \"lab\"\n"
         );
         let spawn = load(&file, &Env::default()).expect("loads").spawn_config();
-        assert_eq!(spawn.command, "my-agent");
-        assert_eq!(spawn.args, ["--acp"]);
+        assert_eq!(spawn.command, "env");
+        assert_eq!(
+            spawn.args,
+            [
+                "-u",
+                "XAT_PASSWORD",
+                "-u",
+                "XAT_PASSWORD_FILE",
+                "my-agent",
+                "--acp"
+            ]
+        );
         assert_eq!(
             spawn.env,
             [("CLAUDE_CODE_ENTRYPOINT".to_owned(), "lab".to_owned())]
         );
         assert_eq!(spawn.cwd, PathBuf::from("/home/user/work"));
+    }
+
+    #[test]
+    fn spawn_config_should_not_hand_the_password_to_the_agent_process() {
+        let mut s = load(MINIMAL, &Env::default()).expect("loads");
+        s.agent_command = "sh".to_owned();
+        s.agent_args = vec!["-c".to_owned(), "printf '%s|%s|%s' \"$XAT_PASSWORD\" \"$XAT_PASSWORD_FILE\" \"$CLAUDE_CODE_ENTRYPOINT\"".to_owned()];
+        let spawn = s.spawn_config();
+        let out = std::process::Command::new(&spawn.command)
+            .args(&spawn.args)
+            .envs(spawn.env.iter().map(|(k, v)| (k, v)))
+            .env("XAT_PASSWORD", "hunter2-value")
+            .env("XAT_PASSWORD_FILE", "/run/secrets/xat")
+            .output()
+            .expect("runs");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "||sandy");
+    }
+
+    #[test]
+    fn load_should_refuse_an_empty_approvers_list() {
+        let file = format!("{MINIMAL}approvers = []\n");
+        assert!(matches!(
+            load(&file, &Env::default()),
+            Err(ConfigError::Invalid {
+                field: "approvers",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn load_should_accept_an_approver_who_may_not_talk_to_the_agent() {
+        let file = format!("{MINIMAL}approvers = [\"bob@chat.example.org\"]\n");
+        assert_eq!(
+            load(&file, &Env::default()).expect("loads").approvers,
+            ["bob@chat.example.org"]
+        );
+    }
+
+    #[rstest]
+    #[case("agent_start_timeout_secs = 5", Some(5))]
+    #[case("agent_start_timeout_secs = 600", Some(600))]
+    #[case("agent_start_timeout_secs = 0", None)]
+    #[case("agent_start_timeout_secs = 601", None)]
+    #[case("", Some(60))]
+    fn load_should_accept_an_agent_start_timeout_between_1_and_600_seconds(
+        #[case] line: &str,
+        #[case] expected: Option<u64>,
+    ) {
+        let file = format!("{MINIMAL}{line}\n");
+        match (load(&file, &Env::default()), expected) {
+            (Ok(s), Some(secs)) => assert_eq!(s.agent_start_timeout, Duration::from_secs(secs)),
+            (
+                Err(ConfigError::Invalid {
+                    field: "agent_start_timeout_secs",
+                    ..
+                }),
+                None,
+            ) => {}
+            (other, expected) => panic!("{line}: {other:?} versus {expected:?}"),
+        }
     }
 
     #[test]

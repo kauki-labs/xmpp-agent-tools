@@ -123,3 +123,14 @@ fn the_binary_should_refuse_a_password_flag() {
     let out = run(&["--password", "x", "--check-config"], &[]);
     assert_eq!(out.status.code(), Some(2), "clap's own usage error");
 }
+
+#[test]
+fn check_config_should_exit_two_when_the_working_directory_does_not_exist() {
+    let path = write_config("nocwd", &format!("{GOOD}cwd = \"/nonexistent/work\"\n"));
+    let out = run(
+        &["--config", path.to_str().expect("utf8"), "--check-config"],
+        &[("XAT_PASSWORD", "pw")],
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(text(&out.stderr).contains("cwd"), "{}", text(&out.stderr));
+}

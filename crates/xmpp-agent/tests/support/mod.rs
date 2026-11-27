@@ -158,6 +158,7 @@ pub fn settings() -> Settings {
         allowed: vec![ALICE.to_owned()],
         approvers: vec![ALICE.to_owned()],
         approval_timeout: Duration::from_secs(600),
+        agent_start_timeout: Duration::from_secs(60),
         log_path: None::<PathBuf>,
     }
 }
