@@ -80,3 +80,32 @@ Consequences for the client:
 Limits: single short runs (the queueing turn took 3 s); cancel during a running tool call, a different working directory for
 `session/load`, and long histories were not tested.
 
+## E16: a Rust client on tokio-xmpp against a real Prosody (2026-11-27)
+Question: can a client built on `tokio-xmpp` 6.0.0 and `xmpp-parsers` 0.23.0 do what the agent client needs? Setup: a throwaway
+Prosody 13.0.6 with direct TLS, a MUC with archive and a file-share component; a test CA handed over through `SSL_CERT_FILE`
+(no trust store is touched). The program (200 lines, two clients) was a throwaway: it was discarded once the result was confirmed and is not in this
+repository, so the table below is the record. Result: **9 of 9 checks passed**.
+
+| # | Check | Result |
+| - | ----- | ------ |
+| 1 | Direct TLS with a verified certificate, SASL, resource bind | PASS: `rustls-native-certs` honoured `SSL_CERT_FILE` on macOS |
+| 2a | Join a MUC and see one's own presence | PASS |
+| 2b | Accept the default room configuration (unlock a new room) | PASS, with a raw `minidom` element: there is no typed `muc#owner` query |
+| 3 | Read another participant's real JID from the room presence | PASS with `muc_room_default_public_jids = true` (typed `MucUser`) |
+| 4a | Send and receive a groupchat message | PASS |
+| 4b | Send and parse a message correction (XEP-0308) | PASS (typed `Replace`) |
+| 4c | Send and parse a reaction (XEP-0444) | PASS (typed `Reactions`) |
+| 5 | Query the room archive (XEP-0313) and page through it with RSM, two at a time | PASS: 7 messages over 4 pages; the body-less reaction is not archived |
+| 6 | Request an upload slot (XEP-0363), PUT a file, GET it back | PASS: status 201, bytes identical |
+
+Costs and findings:
+- Writing it took 14 compile errors, all from guessing API shapes, none from a missing feature: `DnsConfig::NoSrv` needs `resolver: None`,
+  the constructor takes `Timeouts`, `Iq` is an enum with inline fields, `Id` and `QueryId` are tuple structs, attribute names need
+  `NcName`. The crates are thinly documented, so reading their source is part of the job.
+- Server facts found on the way: the file-share routes are per host, so the component needs `http_host` or the PUT answers 404;
+  messages without a body are not archived by default.
+- Size: a release build is 8.5 MB (dynamic against system libraries on macOS); `Cargo.lock` lists 225 crates. Python with
+  `slixmpp` has far fewer dependencies but needs an interpreter.
+- **Not tested:** carbons, stream-management resumption and reconnection, chat states, history on join, large files, long-running
+  stability, the production Prosody build, and OMEMO (the Rust side has only legacy parsers and no crypto, so the OMEMO follow-up
+  would stay on Python or need a new crate).
