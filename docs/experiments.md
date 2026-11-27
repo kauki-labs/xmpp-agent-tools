@@ -56,3 +56,27 @@ Not yet observed for ANY ACP server: a `session/request_permission` call, becaus
 ## Server facts (Prosody 13.0.6, throwaway server, two slixmpp clients)
 - MUC rooms are semi-anonymous by default: `muc_room_default_public_jids` is unset, so `whois` is `moderators`. The owner saw the participant's real JID; the participant saw `None` for the owner. With `muc_room_default_public_jids = true` both saw real JIDs. An approval design that identifies the answering person by JID needs that option (or a moderator client). Room defaults apply at room creation only.
 - `mod_http_openmetrics` serves `prosody_mod_c2s__connections`, `prosody_mod_muc__live_room` and room hit and miss counters (note the double underscore); with `openmetrics_allow_cidr` set and an empty IP list a loopback request was refused (HTTP 403) outside the CIDR and served inside it.
+
+## E12 to E15: ACP behaviour of claude-agent-acp 0.36.1 (2026-11-27)
+One trial each, default permission mode, a real model; script: `experiments/acp/acp_lab.py`. The adapter was started with
+`CLAUDE_CODE_ENTRYPOINT` set.
+
+| # | Question | Result |
+| - | -------- | ------ |
+| E12 | How does a dialog (`AskUserQuestion`) reach the client? | **It does not.** The adapter disables the tool ("AskUserQuestion tool disabled this session"): no permission request and no other request to the client arrived, and the agent asked its question as plain text. |
+| E13a | Prompt queueing: a second `session/prompt` while the first streams | PASS: both calls returned `end_turn`, and the second answer followed the first one's text. The adapter advertises `promptQueueing`. |
+| E13b | `session/cancel` mid-turn | PASS: the pending prompt returned `stopReason: cancelled` at once, and the next prompt on the same session worked. |
+| E14 | Park and resume in a new process | PASS: `session/load` (replays history, two updates) and `session/resume` (no replay) both restored the context: the agent answered `mango-7` to a word given in the first process. |
+| E15 | Does a denied step stop the rest of the work? | No. Two independent steps: the first was rejected (`reject_once`) and the second allowed; the second ran (its file exists), and the agent reported the first as refused. A reject carries **no message**: the agent learns only that permission was refused. |
+
+Consequences for the client:
+- A dialog is ordinary chat. A question from the agent is a normal message and the human's reply is the next prompt. The numbered
+  `AskUserQuestion` flow in `approvals.py` applies only to a stream-json fallback.
+- "Blocked on a human" cannot ride on a denial. After a timeout the client denies, then queues a prompt that says so and tells the
+  agent to continue with independent work (queueing works, E13a).
+- Steering: queue by default, cancel for urgent messages.
+- Resuming a session by id needs no summary; a summary is only needed when a different session takes over.
+
+Limits: single short runs (the queueing turn took 3 s); cancel during a running tool call, a different working directory for
+`session/load`, and long histories were not tested.
+
