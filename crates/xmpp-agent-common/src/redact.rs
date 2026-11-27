@@ -21,12 +21,17 @@ const ARGUMENT_MAX_CHARS: usize = 80;
 
 const KEYWORDS: &str = "(?:password|passwd|pwd|secret|token|api[_-]?key|credential)";
 
+/// What Python's `\s` matches in a `str` pattern that the `regex` crate's `\s` does not: U+001C to U+001F. The patterns below write
+/// `<WS>` for the whole set, so `[<WS>]` is `\s` and `[^<WS>]` is `\S`.
+const WHITESPACE: &str = r"\s\x1c-\x1f";
+
 /// Ordered (pattern, replacement) pairs; the replacement uses the `regex` crate syntax (`${1}`).
 static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
-    let flag_value =
-        format!(r#"(?i)(--?[A-Za-z0-9_-]*{KEYWORDS}[A-Za-z0-9_-]*)(\s+)("[^"]*"|'[^']*'|\S+)"#);
+    let flag_value = format!(
+        r#"(?i)(--?[A-Za-z0-9_-]*{KEYWORDS}[A-Za-z0-9_-]*)([<WS>]+)("[^"]*"|'[^']*'|[^<WS>]+)"#
+    );
     let name_value = format!(
-        r#"(?i)\b([A-Za-z0-9_.-]*{KEYWORDS}[A-Za-z0-9_.-]*)(["']?\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)"#
+        r#"(?i)\b([A-Za-z0-9_.-]*{KEYWORDS}[A-Za-z0-9_.-]*)(["']?[<WS>]*[=:][<WS>]*)("[^"]*"|'[^']*'|[^<WS>]+)"#
     );
     let patterns: [(&str, &'static str); 11] = [
         (
@@ -34,13 +39,13 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
             "[redacted private key]",
         ),
         // The Python pattern has a lookbehind for `://`; the `regex` crate has none, so the scheme is captured and put back.
-        (r"(://)[^/\s:@]+:[^/\s@]+@", "${1}[redacted]@"),
+        (r"(://)[^/<WS>:@]+:[^/<WS>@]+@", "${1}[redacted]@"),
         (
-            r#"(?i)(authorization\s*:\s*)(?:(?:bearer|basic|token)\s+)?[^\s"']+"#,
+            r#"(?i)(authorization[<WS>]*:[<WS>]*)(?:(?:bearer|basic|token)[<WS>]+)?[^<WS>"']+"#,
             "${1}[redacted]",
         ),
         (
-            r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{10,}",
+            r"(?i)\bbearer[<WS>]+[A-Za-z0-9._~+/=-]{10,}",
             "Bearer [redacted]",
         ),
         (r"\bAKIA[0-9A-Z]{16}\b", "[redacted aws key]"),
@@ -62,8 +67,9 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     patterns
         .into_iter()
         .map(|(pattern, replacement)| {
+            let pattern = pattern.replace("<WS>", WHITESPACE);
             (
-                Regex::new(pattern).expect("a constant pattern is valid"),
+                Regex::new(&pattern).expect("a constant pattern is valid"),
                 replacement,
             )
         })
@@ -343,6 +349,13 @@ mod tests {
         // "author" and "tokenize" are not secrets
         assert_eq!(redact("git log --author=bob"), "git log --author=bob");
         assert_eq!(redact("python tokenize.py"), "python tokenize.py");
+    }
+
+    #[test]
+    fn redact_should_treat_information_separators_as_whitespace_when_matching_like_python() {
+        // Python's `\s` matches U+001C to U+001F, the `regex` crate's does not.
+        assert_eq!(redact("token: \u{1f}"), "token: \u{1f}");
+        assert_eq!(redact("PWD=1\u{1f}x"), "PWD=[redacted]\u{1f}x");
     }
 
     // Describe
