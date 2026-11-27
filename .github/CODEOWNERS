@@ -1,0 +1,3 @@
+# Changes to CI and its helpers need the owner's review. Enforce with "Require review from Code Owners" in the ruleset.
+/.github/ @Teebor-Choka
+/ci/ @Teebor-Choka

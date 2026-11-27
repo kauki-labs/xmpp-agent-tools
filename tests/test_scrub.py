@@ -94,6 +94,13 @@ class Scan(unittest.TestCase):
         d = self.make_repo({"img.png": b"\x89PNG\x00" + PRIV[0].encode(), "LICENSE": f"Copyright {NAME}\n", "a.md": "ok\n"})
         self.assertEqual(scrub.scan(d), [])
 
+    def test_a_codeowners_file_may_name_its_owner_but_nothing_else_may(self):
+        owner = "@" + "Tee" + "bor-Choka"
+        d = self.make_repo({".github/CODEOWNERS": f"/ci/ {owner}\n", "docs/a.md": f"owner {owner}\n"})
+        self.assertEqual([(p, n, r) for p, n, r, _ in scrub.scan(d)], [("docs/a.md", 1, "personal")])
+        other = self.make_repo({".github/CODEOWNERS": f"/ci/ {owner}\n# host {PRIV[0]}\n"})
+        self.assertEqual([(p, n, r) for p, n, r, _ in scrub.scan(other)], [(".github/CODEOWNERS", 2, "private-address")])
+
     def test_untracked_files_are_ignored(self):
         d = self.make_repo({"a.md": "ok\n"})
         with open(os.path.join(d, "untracked.md"), "w") as f:

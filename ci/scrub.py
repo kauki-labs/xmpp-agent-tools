@@ -26,6 +26,8 @@ _RULES = [
     ("personal", re.compile("|".join(["tee" + "bor", "cso" + "ka", "hop" + "rnet", r"\.ts" + r"\.net"]), re.IGNORECASE)),
 ]
 _SKIP_NAMES = frozenset({"LICENSE"})
+# A CODEOWNERS file has to name its owners; every other rule still applies to it.
+_RELAXED = {"CODEOWNERS": frozenset({"personal"})}
 
 
 def find_problems(text, path=""):
@@ -54,8 +56,10 @@ def scan(root, paths=None):
             continue
         if b"\0" in data:
             continue  # binary
+        relaxed = _RELAXED.get(os.path.basename(rel), frozenset())
         for number, rule, snippet in find_problems(data.decode("utf-8", errors="replace"), rel):
-            problems.append((rel, number, rule, snippet))
+            if rule not in relaxed:
+                problems.append((rel, number, rule, snippet))
     return problems
 
 
