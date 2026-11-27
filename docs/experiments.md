@@ -60,8 +60,8 @@ Not yet observed for ANY ACP server: a `session/request_permission` call, becaus
 ## E16: a Rust client on tokio-xmpp against a real Prosody (2026-11-27)
 Question: can a client built on `tokio-xmpp` 6.0.0 and `xmpp-parsers` 0.23.0 do what the agent client needs? Setup: a throwaway
 Prosody 13.0.6 with direct TLS, a MUC with archive and a file-share component; a test CA handed over through `SSL_CERT_FILE`
-(no trust store is touched). The program is `experiments/e16` (200 lines, two clients); `experiments/e16/run.sh` builds the server
-config and runs everything from a clean state. Result: **9 of 9 checks pass**, exit code 0.
+(no trust store is touched). The program (200 lines, two clients) was a throwaway: it was discarded once the result was confirmed and is not in this
+repository, so the table below is the record. Result: **9 of 9 checks passed**.
 
 | # | Check | Result |
 | - | ----- | ------ |

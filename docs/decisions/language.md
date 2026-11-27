@@ -1,6 +1,6 @@
 ---
 title: Implementation language
-status: open, spike passed, switch to be confirmed
+status: decided, Rust
 updated: 2026-11-27
 ---
 
@@ -16,8 +16,12 @@ MUC, MAM, message correction, HTTP upload, reactions, chat states and carbons, b
 Python alternative: `slixmpp` 1.17.0 with `slixmpp-omemo` 2.2.0 (its source handles group chats) and the official `mcp` SDK.
 
 **Outcome of E16 (2026-11-27).** The spike passed all nine checks (see [experiments.md](../experiments.md)). Rust is viable for the
-XMPP edge. What it does not cover: carbons, stream-management resumption, chat states and OMEMO. Whether to switch is left to the
-maintainer; the Python code stays until then.
+XMPP edge. What it does not cover: carbons, stream-management resumption, chat states and OMEMO. The spike code was discarded after
+the result was confirmed.
+
+**Decision (maintainer, 2026-11-27).** Rust for the XMPP edge, if possible. The Python modules (router, redactor, approvals broker) are
+ported with their tests as the specification; the Python code stays until each port is verified. OMEMO stays open: the Rust side has no
+crypto.
 
 **Decision (before E16).** Keep Python until experiment E16 decides: a time-boxed spike of a small `tokio-xmpp` program against a throwaway Prosody
 (direct TLS, join a MUC and read real JIDs, send and receive a correction and a reaction, page MAM, upload and download a file). If it
