@@ -12,7 +12,7 @@ XMPP client (any app) <-> XMPP server <-> xmpp_agent_client <-> harness over ACP
 | `xmpp_agent_client.router` | Classify a message: prompt, client command (`/stop`, `/mode`), harness command, or a rejection. Unknown names are refused because a harness would take them as plain text. | built, tested |
 | `xmpp_agent_client.approvals` | Tool approvals and dialogs through chat: only an approver's real JID answers, one decision per request, timeout and shutdown deny. | built, tested |
 | ACP adapter, XMPP layer, session loop | Run the harness, relay text both ways, files, history, presence. | planned |
-| `xmpp-agent` | The session loop in direct messages: a human on XMPP talks to one agent over ACP, approvals are answered in chat ([details](session-loop.md)). | built, tested against a fake chat and a scripted agent; never run against a real server or model |
+| `xmpp-agent` | The session loop in direct messages: a human on XMPP talks to one agent over ACP, approvals are answered in chat ([details](session-loop.md)). | built, tested against a fake chat and a scripted agent, and in an opt-in test against a throwaway Prosody; never run with a real model |
 | `xmpp_agent_mcp` | Directory and guide tools for everyone; room creation and assignment only in a separate, gated binary. | planned |
 
 Facts every module relies on are in [experiments.md](experiments.md): the permission tool receives

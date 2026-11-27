@@ -40,3 +40,4 @@ xmpp-agent-xmpp = { path = "../xmpp-agent-xmpp" }
 [dev-dependencies]
 rstest.workspace = true
 xmpp-agent = { path = ".", features = ["test-agent"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
