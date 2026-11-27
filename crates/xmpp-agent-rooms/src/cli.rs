@@ -52,8 +52,14 @@ impl Command {
     pub fn action(&self) -> Option<Action> {
         match self {
             Self::Create { name } => Some(Action::Create { name: name.clone() }),
-            Self::Assign { room, jid } => Some(Action::Assign { room: room.clone(), jid: jid.clone() }),
-            Self::Unassign { room, jid } => Some(Action::Unassign { room: room.clone(), jid: jid.clone() }),
+            Self::Assign { room, jid } => Some(Action::Assign {
+                room: room.clone(),
+                jid: jid.clone(),
+            }),
+            Self::Unassign { room, jid } => Some(Action::Unassign {
+                room: room.clone(),
+                jid: jid.clone(),
+            }),
             Self::Mcp => None,
         }
     }
@@ -70,15 +76,32 @@ mod parsing {
     #[test]
     fn parse_should_build_a_create_action_when_given_a_name() {
         let cli = parse(&["create", "lab"]).expect("parses");
-        assert_eq!(cli.command.action(), Some(Action::Create { name: "lab".to_owned() }));
+        assert_eq!(
+            cli.command.action(),
+            Some(Action::Create {
+                name: "lab".to_owned()
+            })
+        );
     }
 
     #[test]
     fn parse_should_build_assign_and_unassign_actions_when_given_a_room_and_a_jid() {
         let assign = parse(&["assign", "lab", "alice@chat.example.org"]).expect("parses");
-        assert_eq!(assign.command.action(), Some(Action::Assign { room: "lab".to_owned(), jid: "alice@chat.example.org".to_owned() }));
+        assert_eq!(
+            assign.command.action(),
+            Some(Action::Assign {
+                room: "lab".to_owned(),
+                jid: "alice@chat.example.org".to_owned()
+            })
+        );
         let unassign = parse(&["unassign", "lab", "alice@chat.example.org"]).expect("parses");
-        assert_eq!(unassign.command.action(), Some(Action::Unassign { room: "lab".to_owned(), jid: "alice@chat.example.org".to_owned() }));
+        assert_eq!(
+            unassign.command.action(),
+            Some(Action::Unassign {
+                room: "lab".to_owned(),
+                jid: "alice@chat.example.org".to_owned()
+            })
+        );
     }
 
     #[test]
@@ -88,8 +111,22 @@ mod parsing {
 
     #[test]
     fn parse_should_accept_the_global_flags_before_or_after_the_subcommand() {
-        let before = parse(&["--capabilities", "rooms", "--config", "/etc/xat.toml", "mcp"]).expect("parses");
-        let after = parse(&["mcp", "--capabilities", "rooms", "--config", "/etc/xat.toml"]).expect("parses");
+        let before = parse(&[
+            "--capabilities",
+            "rooms",
+            "--config",
+            "/etc/xat.toml",
+            "mcp",
+        ])
+        .expect("parses");
+        let after = parse(&[
+            "mcp",
+            "--capabilities",
+            "rooms",
+            "--config",
+            "/etc/xat.toml",
+        ])
+        .expect("parses");
         assert_eq!(before, after);
         assert_eq!(before.capabilities.as_deref(), Some("rooms"));
         assert_eq!(before.config, Some(PathBuf::from("/etc/xat.toml")));
@@ -97,7 +134,14 @@ mod parsing {
 
     #[test]
     fn parse_should_refuse_when_arguments_are_missing_or_the_command_is_unknown() {
-        for args in [&[][..], &["create"], &["assign", "lab"], &["unassign"], &["delete", "lab"], &["create", "a", "b"]] {
+        for args in [
+            &[][..],
+            &["create"],
+            &["assign", "lab"],
+            &["unassign"],
+            &["delete", "lab"],
+            &["create", "a", "b"],
+        ] {
             assert!(parse(args).is_err(), "{args:?}");
         }
     }

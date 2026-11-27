@@ -2,6 +2,12 @@
 
 use crate::errors::ValidationError;
 
+/// Longest room name, in characters. The provisioner enforces the same limit.
+const MAX_ROOM_NAME_CHARS: usize = 32;
+
+/// Rooms whose names start with this prefix belong to the organization and are not created or changed through these tools.
+const RESERVED_PREFIX: &str = "org_";
+
 /// A room name that passed validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomName(String);
@@ -9,7 +15,15 @@ pub struct RoomName(String);
 impl RoomName {
     /// Accept `[a-z0-9_]{1,32}` that does not start with `org_`.
     pub fn parse(input: &str) -> Result<Self, ValidationError> {
-        Ok(Self(input.to_owned()))
+        let well_formed = (1..=MAX_ROOM_NAME_CHARS).contains(&input.len())
+            && input
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_'));
+        match (well_formed, input.starts_with(RESERVED_PREFIX)) {
+            (false, _) => Err(ValidationError::RoomName),
+            (true, true) => Err(ValidationError::OrgPrefix),
+            (true, false) => Ok(Self(input.to_owned())),
+        }
     }
 
     /// The validated name.
@@ -25,7 +39,18 @@ pub struct BareJid(String);
 impl BareJid {
     /// Accept `<local>@<domain>`: one `@`, both parts non-empty, no `/`, no whitespace.
     pub fn parse(input: &str) -> Result<Self, ValidationError> {
-        Ok(Self(input.to_owned()))
+        let forbidden = |c: char| c == '/' || c.is_whitespace();
+        match input.split_once('@') {
+            Some((local, domain))
+                if !local.is_empty()
+                    && !domain.is_empty()
+                    && !domain.contains('@')
+                    && !input.contains(forbidden) =>
+            {
+                Ok(Self(input.to_owned()))
+            }
+            _ => Err(ValidationError::Jid),
+        }
     }
 
     /// The validated JID.
@@ -46,13 +71,19 @@ pub enum Affiliation {
 impl Affiliation {
     /// The wire value.
     pub fn as_str(self) -> &'static str {
-        "member"
+        match self {
+            Self::Member => "member",
+            Self::None => "none",
+        }
     }
 
     /// Accept `member` or `none`.
     pub fn parse(input: &str) -> Result<Self, ValidationError> {
-        let _ = input;
-        Ok(Self::Member)
+        match input {
+            "member" => Ok(Self::Member),
+            "none" => Ok(Self::None),
+            _ => Err(ValidationError::Affiliation),
+        }
     }
 }
 
@@ -70,7 +101,10 @@ mod room_names {
     #[case("orgx")]
     #[case("________________________________")]
     fn room_name_should_be_accepted_when_it_matches_the_pattern(#[case] input: &str) {
-        assert_eq!(RoomName::parse(input).map(|n| n.as_str().to_owned()), Ok(input.to_owned()));
+        assert_eq!(
+            RoomName::parse(input).map(|n| n.as_str().to_owned()),
+            Ok(input.to_owned())
+        );
     }
 
     #[rstest]
@@ -99,7 +133,10 @@ mod room_names {
     #[test]
     fn room_name_should_accept_the_longest_name_when_it_has_32_characters() {
         assert!(RoomName::parse(&"a".repeat(32)).is_ok());
-        assert_eq!(RoomName::parse(&"a".repeat(33)), Err(ValidationError::RoomName));
+        assert_eq!(
+            RoomName::parse(&"a".repeat(33)),
+            Err(ValidationError::RoomName)
+        );
     }
 }
 
@@ -114,7 +151,10 @@ mod member_jids {
     #[case("a@b")]
     #[case("sbx-1-2@chat.example.org")]
     fn jid_should_be_accepted_when_it_is_bare(#[case] input: &str) {
-        assert_eq!(BareJid::parse(input).map(|j| j.as_str().to_owned()), Ok(input.to_owned()));
+        assert_eq!(
+            BareJid::parse(input).map(|j| j.as_str().to_owned()),
+            Ok(input.to_owned())
+        );
     }
 
     #[rstest]
@@ -145,7 +185,11 @@ mod affiliations {
     #[rstest]
     #[case("member", Affiliation::Member, "member")]
     #[case("none", Affiliation::None, "none")]
-    fn affiliation_should_round_trip_when_it_is_member_or_none(#[case] input: &str, #[case] expected: Affiliation, #[case] wire: &str) {
+    fn affiliation_should_round_trip_when_it_is_member_or_none(
+        #[case] input: &str,
+        #[case] expected: Affiliation,
+        #[case] wire: &str,
+    ) {
         assert_eq!(Affiliation::parse(input), Ok(expected));
         assert_eq!(expected.as_str(), wire);
     }

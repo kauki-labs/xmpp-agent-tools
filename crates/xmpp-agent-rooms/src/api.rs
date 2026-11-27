@@ -1,6 +1,8 @@
 //! The rights service contract as pure functions: build a request, map a response.
 
 use serde::Deserialize;
+use serde_json::{Value, json};
+use xmpp_agent_common::redact::redact;
 
 use crate::errors::ServiceError;
 use crate::validate::{Affiliation, BareJid, RoomName};
@@ -28,25 +30,66 @@ pub struct Created {
 
 /// Build the request that creates a room.
 pub fn create_request(name: &RoomName) -> Request {
-    Request { path: String::new(), body: name.as_str().to_owned() }
+    Request {
+        path: "/v1/rooms".to_owned(),
+        body: json!({"name": name.as_str()}).to_string(),
+    }
 }
 
 /// Build the request that sets one member's affiliation.
 pub fn assign_request(room: &RoomName, jid: &BareJid, affiliation: Affiliation) -> Request {
-    let _ = (jid, affiliation);
-    Request { path: room.as_str().to_owned(), body: String::new() }
+    Request {
+        path: format!("/v1/rooms/{}/members", room.as_str()),
+        body: json!({"jid": jid.as_str(), "affiliation": affiliation.as_str()}).to_string(),
+    }
 }
 
 /// Map the answer to a room creation.
 pub fn map_create(status: u16, body: &str) -> Result<Created, ServiceError> {
-    let _ = (status, body);
-    Ok(Created { room: String::new(), created: false })
+    match status {
+        200 => serde_json::from_str(body).map_err(|_| ServiceError::MalformedResponse),
+        other => Err(refusal(other, body)),
+    }
 }
 
 /// Map the answer to an affiliation change.
 pub fn map_assign(status: u16, body: &str) -> Result<(), ServiceError> {
-    let _ = (status, body);
-    Ok(())
+    match status {
+        200 => match serde_json::from_str::<Value>(body) {
+            Ok(Value::Object(_)) => Ok(()),
+            _ => Err(ServiceError::MalformedResponse),
+        },
+        other => Err(refusal(other, body)),
+    }
+}
+
+/// The error for a status other than 200. Only `400` and `409` carry service text.
+fn refusal(status: u16, body: &str) -> ServiceError {
+    match status {
+        400 => ServiceError::Invalid(service_text(body)),
+        401 => ServiceError::Unauthorized,
+        403 => ServiceError::Forbidden,
+        409 => ServiceError::Conflict(service_text(body)),
+        500..=599 => ServiceError::Server(status),
+        other => ServiceError::UnexpectedStatus(other),
+    }
+}
+
+/// The `error` text of an error body, redacted first and cut second so a secret cannot survive as a prefix.
+fn service_text(body: &str) -> String {
+    let text = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("error")?.as_str().map(str::to_owned))
+        .filter(|t| !t.is_empty());
+    match text {
+        Some(text) => sanitize(&text),
+        None => "no details".to_owned(),
+    }
+}
+
+/// Remove secrets from text of an outside origin, then cut it to [`ERROR_TEXT_MAX_CHARS`].
+pub fn sanitize(text: &str) -> String {
+    redact(text).chars().take(ERROR_TEXT_MAX_CHARS).collect()
 }
 
 #[cfg(test)]
@@ -72,7 +115,10 @@ mod requests {
         let jid = BareJid::parse("alice@chat.example.org").expect("valid");
         let request = assign_request(&room, &jid, Affiliation::Member);
         assert_eq!(request.path, "/v1/rooms/lab_7/members");
-        assert_eq!(body(&request), json!({"jid": "alice@chat.example.org", "affiliation": "member"}));
+        assert_eq!(
+            body(&request),
+            json!({"jid": "alice@chat.example.org", "affiliation": "member"})
+        );
     }
 
     #[test]
@@ -80,7 +126,10 @@ mod requests {
         let room = RoomName::parse("lab").expect("valid");
         let jid = BareJid::parse("alice@chat.example.org").expect("valid");
         let request = assign_request(&room, &jid, Affiliation::None);
-        assert_eq!(body(&request), json!({"jid": "alice@chat.example.org", "affiliation": "none"}));
+        assert_eq!(
+            body(&request),
+            json!({"jid": "alice@chat.example.org", "affiliation": "none"})
+        );
     }
 }
 
@@ -96,8 +145,20 @@ mod responses {
 
     #[test]
     fn map_create_should_return_the_room_when_the_status_is_200() {
-        assert_eq!(map_create(200, CREATED), Ok(Created { room: "lab@muc.example.org".to_owned(), created: true }));
-        assert_eq!(map_create(200, EXISTED), Ok(Created { room: "lab@muc.example.org".to_owned(), created: false }));
+        assert_eq!(
+            map_create(200, CREATED),
+            Ok(Created {
+                room: "lab@muc.example.org".to_owned(),
+                created: true
+            })
+        );
+        assert_eq!(
+            map_create(200, EXISTED),
+            Ok(Created {
+                room: "lab@muc.example.org".to_owned(),
+                created: false
+            })
+        );
     }
 
     #[rstest]
@@ -146,7 +207,11 @@ mod responses {
     #[case(204, "", ServiceError::UnexpectedStatus(204))]
     #[case(0, "", ServiceError::UnexpectedStatus(0))]
     #[case(600, "", ServiceError::UnexpectedStatus(600))]
-    fn the_mappers_should_map_each_status_when_the_service_does_not_answer_200(#[case] status: u16, #[case] body: &str, #[case] expected: ServiceError) {
+    fn the_mappers_should_map_each_status_when_the_service_does_not_answer_200(
+        #[case] status: u16,
+        #[case] body: &str,
+        #[case] expected: ServiceError,
+    ) {
         assert_eq!(map_create(status, body), Err(expected.clone()));
         assert_eq!(map_assign(status, body), Err(expected));
     }
@@ -164,7 +229,9 @@ mod responses {
     fn map_create_should_cut_the_service_text_when_it_is_long() {
         let body = format!(r#"{{"error": "{}"}}"#, "x".repeat(5000));
         match map_create(409, &body) {
-            Err(ServiceError::Conflict(text)) => assert_eq!(text.chars().count(), ERROR_TEXT_MAX_CHARS),
+            Err(ServiceError::Conflict(text)) => {
+                assert_eq!(text.chars().count(), ERROR_TEXT_MAX_CHARS)
+            }
             other => panic!("expected Conflict, got {other:?}"),
         }
     }

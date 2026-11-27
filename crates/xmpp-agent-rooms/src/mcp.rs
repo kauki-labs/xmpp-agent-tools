@@ -5,8 +5,8 @@ use std::sync::Arc;
 use rmcp::ErrorData as McpError;
 use rmcp::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use serde_json::{Map, Value, json};
@@ -24,7 +24,9 @@ pub struct RoomsServer<T> {
 impl<T> RoomsServer<T> {
     /// Serve these actions.
     pub fn new(rooms: Rooms<T>) -> Self {
-        Self { rooms: Some(Arc::new(rooms)) }
+        Self {
+            rooms: Some(Arc::new(rooms)),
+        }
     }
 
     /// Serve nothing: no tools listed, every call refused.
@@ -34,16 +36,31 @@ impl<T> RoomsServer<T> {
 }
 
 fn schema(properties: &[(&str, &str)]) -> Arc<Map<String, Value>> {
-    let props: Map<String, Value> = properties.iter().map(|(name, text)| ((*name).to_owned(), json!({"type": "string", "description": text}))).collect();
+    let props: Map<String, Value> = properties
+        .iter()
+        .map(|(name, text)| {
+            (
+                (*name).to_owned(),
+                json!({"type": "string", "description": text}),
+            )
+        })
+        .collect();
     let required: Vec<&str> = properties.iter().map(|(name, _)| *name).collect();
-    let Value::Object(map) = json!({"type": "object", "properties": props, "required": required}) else { unreachable!("a json! object literal") };
+    let Value::Object(map) = json!({"type": "object", "properties": props, "required": required})
+    else {
+        unreachable!("a json! object literal")
+    };
     Arc::new(map)
 }
 
 /// The tool definitions.
 pub fn tool_list() -> Vec<Tool> {
     vec![
-        Tool::new("room_create", "Create a chat room, or report that it exists.", schema(&[("name", "Room name, [a-z0-9_]{1,32}")])),
+        Tool::new(
+            "room_create",
+            "Create a chat room, or report that it exists.",
+            schema(&[("name", "Room name, [a-z0-9_]{1,32}")]),
+        ),
         Tool::new(
             "room_assign",
             "Make a JID a member of a room.",
@@ -63,27 +80,51 @@ fn text_arg(arguments: &Option<Map<String, Value>>, key: &str) -> Option<String>
 
 impl<T: Transport + Send + Sync + 'static> ServerHandler for RoomsServer<T> {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("xmpp-agent-rooms", env!("CARGO_PKG_VERSION")))
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(
+            Implementation::new("xmpp-agent-rooms", env!("CARGO_PKG_VERSION")),
+        )
     }
 
-    async fn list_tools(&self, _request: Option<PaginatedRequestParams>, _context: RequestContext<RoleServer>) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult::with_all_items(tool_list()))
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        let tools = if self.rooms.is_some() {
+            tool_list()
+        } else {
+            Vec::new()
+        };
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
-    async fn call_tool(&self, request: CallToolRequestParams, _context: RequestContext<RoleServer>) -> Result<CallToolResponse, McpError> {
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
         let Some(rooms) = &self.rooms else {
-            return Ok(CallToolResult::error(vec![ContentBlock::text(RoomsError::Disabled.to_string())]).into());
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                RoomsError::Disabled.to_string(),
+            )])
+            .into());
         };
         let args = &request.arguments;
         let action = match request.name.as_ref() {
             "room_create" => text_arg(args, "name").map(|name| Action::Create { name }),
-            "room_assign" => text_arg(args, "room").zip(text_arg(args, "jid")).map(|(room, jid)| Action::Assign { room, jid }),
-            "room_unassign" => text_arg(args, "room").zip(text_arg(args, "jid")).map(|(room, jid)| Action::Unassign { room, jid }),
+            "room_assign" => text_arg(args, "room")
+                .zip(text_arg(args, "jid"))
+                .map(|(room, jid)| Action::Assign { room, jid }),
+            "room_unassign" => text_arg(args, "room")
+                .zip(text_arg(args, "jid"))
+                .map(|(room, jid)| Action::Unassign { room, jid }),
             _ => return Err(McpError::invalid_params("unknown tool", None)),
         };
         let Some(action) = action else {
-            return Ok(CallToolResult::error(vec![ContentBlock::text("missing or non-string argument")]).into());
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                "missing or non-string argument",
+            )])
+            .into());
         };
         let rooms = Arc::clone(rooms);
         let outcome = tokio::task::spawn_blocking(move || rooms.run(&action)).await;

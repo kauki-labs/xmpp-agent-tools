@@ -3,6 +3,8 @@
 use std::fmt;
 use std::time::Duration;
 
+use serde::Deserialize;
+
 use crate::errors::ConfigError;
 
 /// Request timeout used when the config file sets none, in seconds.
@@ -26,7 +28,7 @@ impl Token {
 
 impl fmt::Debug for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str("Token([redacted])")
     }
 }
 
@@ -52,11 +54,47 @@ pub struct Env {
     pub capabilities: Option<String>,
 }
 
+/// The keys of the `--config` file. Unknown keys are an error so a typo does not pass as a missing setting.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileSettings {
+    rights_url: Option<String>,
+    rights_token: Option<String>,
+    timeout_secs: Option<u64>,
+}
+
 impl Config {
     /// Merge the environment over the TOML text of a config file. An environment value wins.
     pub fn load(env: &Env, file: Option<&str>) -> Result<Self, ConfigError> {
-        let _ = (env, file);
-        Err(ConfigError::Url)
+        let from_file = match file {
+            Some(text) => toml::from_str::<FileSettings>(text)
+                .map_err(|e| ConfigError::File(e.message().to_owned()))?,
+            None => FileSettings::default(),
+        };
+        let present = |value: &Option<String>| value.clone().filter(|v| !v.is_empty());
+        let url = present(&env.rights_url)
+            .or_else(|| present(&from_file.rights_url))
+            .ok_or(ConfigError::Missing("XAT_RIGHTS_URL"))?;
+        let token = present(&env.token)
+            .or_else(|| present(&from_file.rights_token))
+            .ok_or(ConfigError::Missing("XAT_RIGHTS_TOKEN"))?;
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(ConfigError::Url);
+        }
+        let timeout_secs = match from_file.timeout_secs {
+            Some(0) => {
+                return Err(ConfigError::File(
+                    "timeout_secs must be at least 1".to_owned(),
+                ));
+            }
+            Some(secs) => secs,
+            None => DEFAULT_TIMEOUT_SECS,
+        };
+        Ok(Self {
+            rights_url: url.trim_end_matches('/').to_owned(),
+            token: Token::new(token),
+            timeout: Duration::from_secs(timeout_secs),
+        })
     }
 }
 
@@ -67,19 +105,22 @@ pub struct Capabilities(Vec<String>);
 impl Capabilities {
     /// Split a comma or space separated list into whole tokens.
     pub fn parse(list: &str) -> Self {
-        let _ = list;
-        Self(Vec::new())
+        Self(
+            list.split(|c: char| c == ',' || c.is_whitespace())
+                .filter(|t| !t.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        )
     }
 
     /// The `--capabilities` flag when given, otherwise `XAT_CAPABILITIES`, otherwise none.
     pub fn from_sources(flag: Option<&str>, env: Option<&str>) -> Self {
-        let _ = (flag, env);
-        Self::default()
+        flag.or(env).map(Self::parse).unwrap_or_default()
     }
 
     /// True when `rooms` is one of the tokens.
     pub fn allows_rooms(&self) -> bool {
-        true
+        self.0.iter().any(|token| token == "rooms")
     }
 }
 
@@ -90,12 +131,20 @@ mod settings {
     use super::*;
 
     fn env(url: Option<&str>, token: Option<&str>) -> Env {
-        Env { rights_url: url.map(str::to_owned), token: token.map(str::to_owned), capabilities: None }
+        Env {
+            rights_url: url.map(str::to_owned),
+            token: token.map(str::to_owned),
+            capabilities: None,
+        }
     }
 
     #[test]
     fn load_should_use_the_environment_when_there_is_no_file() {
-        let config = Config::load(&env(Some("https://rights.example.org"), Some("tok-1")), None).expect("loads");
+        let config = Config::load(
+            &env(Some("https://rights.example.org"), Some("tok-1")),
+            None,
+        )
+        .expect("loads");
         assert_eq!(config.rights_url, "https://rights.example.org");
         assert_eq!(config.token.expose(), "tok-1");
         assert_eq!(config.timeout, Duration::from_secs(DEFAULT_TIMEOUT_SECS));
@@ -103,7 +152,11 @@ mod settings {
 
     #[test]
     fn load_should_trim_trailing_slashes_when_the_url_has_them() {
-        let config = Config::load(&env(Some("https://rights.example.org//"), Some("tok-1")), None).expect("loads");
+        let config = Config::load(
+            &env(Some("https://rights.example.org//"), Some("tok-1")),
+            None,
+        )
+        .expect("loads");
         assert_eq!(config.rights_url, "https://rights.example.org");
     }
 
@@ -119,7 +172,11 @@ mod settings {
     #[test]
     fn load_should_prefer_the_environment_when_the_file_sets_the_same_value() {
         let file = "rights_url = \"http://file.example.org\"\nrights_token = \"tok-file\"\n";
-        let config = Config::load(&env(Some("http://env.example.org"), Some("tok-env")), Some(file)).expect("loads");
+        let config = Config::load(
+            &env(Some("http://env.example.org"), Some("tok-env")),
+            Some(file),
+        )
+        .expect("loads");
         assert_eq!(config.rights_url, "http://env.example.org");
         assert_eq!(config.token.expose(), "tok-env");
     }
@@ -127,23 +184,44 @@ mod settings {
     #[rstest]
     #[case(None, Some("tok"), ConfigError::Missing("XAT_RIGHTS_URL"))]
     #[case(Some(""), Some("tok"), ConfigError::Missing("XAT_RIGHTS_URL"))]
-    #[case(Some("https://rights.example.org"), None, ConfigError::Missing("XAT_RIGHTS_TOKEN"))]
-    #[case(Some("https://rights.example.org"), Some(""), ConfigError::Missing("XAT_RIGHTS_TOKEN"))]
+    #[case(
+        Some("https://rights.example.org"),
+        None,
+        ConfigError::Missing("XAT_RIGHTS_TOKEN")
+    )]
+    #[case(
+        Some("https://rights.example.org"),
+        Some(""),
+        ConfigError::Missing("XAT_RIGHTS_TOKEN")
+    )]
     #[case(Some("rights.example.org"), Some("tok"), ConfigError::Url)]
     #[case(Some("ftp://rights.example.org"), Some("tok"), ConfigError::Url)]
-    fn load_should_fail_with_a_clear_error_when_a_setting_is_missing_or_bad(#[case] url: Option<&str>, #[case] token: Option<&str>, #[case] expected: ConfigError) {
+    fn load_should_fail_with_a_clear_error_when_a_setting_is_missing_or_bad(
+        #[case] url: Option<&str>,
+        #[case] token: Option<&str>,
+        #[case] expected: ConfigError,
+    ) {
         assert_eq!(Config::load(&env(url, token), None), Err(expected));
     }
 
     #[test]
     fn load_should_fail_when_the_file_is_not_valid_toml() {
-        assert!(matches!(Config::load(&Env::default(), Some("rights_url = ")), Err(ConfigError::File(_))));
+        assert!(matches!(
+            Config::load(&Env::default(), Some("rights_url = ")),
+            Err(ConfigError::File(_))
+        ));
     }
 
     #[test]
     fn load_should_fail_when_the_timeout_is_zero() {
         let file = "timeout_secs = 0\n";
-        assert!(matches!(Config::load(&env(Some("http://rights.example.org"), Some("tok")), Some(file)), Err(ConfigError::File(_))));
+        assert!(matches!(
+            Config::load(
+                &env(Some("http://rights.example.org"), Some("tok")),
+                Some(file)
+            ),
+            Err(ConfigError::File(_))
+        ));
     }
 
     #[test]
@@ -151,12 +229,19 @@ mod settings {
         let file = "rights_token = \"s3cr3t-in-file\nrights_url = 1\n";
         let error = Config::load(&Env::default(), Some(file)).expect_err("broken file");
         assert!(!error.to_string().contains("s3cr3t-in-file"), "{error}");
-        assert!(!format!("{error:?}").contains("s3cr3t-in-file"), "{error:?}");
+        assert!(
+            !format!("{error:?}").contains("s3cr3t-in-file"),
+            "{error:?}"
+        );
     }
 
     #[test]
     fn debug_should_hide_the_token_when_the_config_is_printed() {
-        let config = Config::load(&env(Some("https://rights.example.org"), Some("s3cr3t-value")), None).expect("loads");
+        let config = Config::load(
+            &env(Some("https://rights.example.org"), Some("s3cr3t-value")),
+            None,
+        )
+        .expect("loads");
         let shown = format!("{config:?} {:?}", config.token);
         assert!(!shown.contains("s3cr3t-value"), "{shown}");
         assert!(shown.contains("[redacted]"), "{shown}");
@@ -175,7 +260,10 @@ mod settings {
     #[case("room", false)]
     #[case("ROOMS", false)]
     #[case("rooms:read", false)]
-    fn capabilities_should_allow_rooms_only_when_rooms_is_a_whole_token(#[case] list: &str, #[case] allowed: bool) {
+    fn capabilities_should_allow_rooms_only_when_rooms_is_a_whole_token(
+        #[case] list: &str,
+        #[case] allowed: bool,
+    ) {
         assert_eq!(Capabilities::parse(list).allows_rooms(), allowed);
     }
 
@@ -186,7 +274,14 @@ mod settings {
     #[case(Some("directory"), Some("rooms"), false)]
     #[case(Some(""), Some("rooms"), false)]
     #[case(None, None, false)]
-    fn capabilities_should_prefer_the_flag_when_both_sources_are_set(#[case] flag: Option<&str>, #[case] env: Option<&str>, #[case] allowed: bool) {
-        assert_eq!(Capabilities::from_sources(flag, env).allows_rooms(), allowed);
+    fn capabilities_should_prefer_the_flag_when_both_sources_are_set(
+        #[case] flag: Option<&str>,
+        #[case] env: Option<&str>,
+        #[case] allowed: bool,
+    ) {
+        assert_eq!(
+            Capabilities::from_sources(flag, env).allows_rooms(),
+            allowed
+        );
     }
 }

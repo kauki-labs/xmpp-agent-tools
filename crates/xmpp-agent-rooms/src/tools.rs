@@ -40,7 +40,10 @@ pub struct Rooms<T> {
 impl<T: Transport> Rooms<T> {
     /// Bind the actions to a transport and the granted capabilities.
     pub fn new(transport: T, capabilities: Capabilities) -> Self {
-        Self { transport, capabilities }
+        Self {
+            transport,
+            capabilities,
+        }
     }
 
     /// Run one action and return a one-line result for the caller.
@@ -54,14 +57,24 @@ impl<T: Transport> Rooms<T> {
                 let request = api::create_request(&name);
                 let response = self.transport.post(&request.path, &request.body)?;
                 let Created { room, created } = api::map_create(response.status, &response.body)?;
-                Ok(if created { format!("created {room}") } else { format!("{room} already exists") })
+                Ok(if created {
+                    format!("created {room}")
+                } else {
+                    format!("{room} already exists")
+                })
             }
             Action::Assign { room, jid } => self.set(room, jid, Affiliation::Member, "assigned"),
             Action::Unassign { room, jid } => self.set(room, jid, Affiliation::None, "unassigned"),
         }
     }
 
-    fn set(&self, room: &str, jid: &str, affiliation: Affiliation, done: &str) -> Result<String, RoomsError> {
+    fn set(
+        &self,
+        room: &str,
+        jid: &str,
+        affiliation: Affiliation,
+        done: &str,
+    ) -> Result<String, RoomsError> {
         let room = RoomName::parse(room)?;
         let jid = BareJid::parse(jid)?;
         let request = api::assign_request(&room, &jid, affiliation);

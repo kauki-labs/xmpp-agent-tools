@@ -20,7 +20,9 @@ impl fmt::Display for ValidationError {
         f.write_str(match self {
             Self::RoomName => "room name must match [a-z0-9_]{1,32}",
             Self::OrgPrefix => "room names starting with org_ are reserved",
-            Self::Jid => "member must be a bare JID: <local>@<domain>, no resource, no slash, no whitespace",
+            Self::Jid => {
+                "member must be a bare JID: <local>@<domain>, no resource, no slash, no whitespace"
+            }
             Self::Affiliation => "affiliation must be member or none",
         })
     }
@@ -57,8 +59,12 @@ impl fmt::Display for ServiceError {
             Self::Forbidden => f.write_str("the caller is not a higher entity (403)"),
             Self::Conflict(text) => write!(f, "conflict: {text}"),
             Self::Server(status) => write!(f, "rights service failed ({status})"),
-            Self::UnexpectedStatus(status) => write!(f, "unexpected status {status} from the rights service"),
-            Self::MalformedResponse => f.write_str("the rights service sent a response that does not match the contract"),
+            Self::UnexpectedStatus(status) => {
+                write!(f, "unexpected status {status} from the rights service")
+            }
+            Self::MalformedResponse => {
+                f.write_str("the rights service sent a response that does not match the contract")
+            }
             Self::Transport(text) => write!(f, "no answer from the rights service: {text}"),
         }
     }
@@ -105,7 +111,9 @@ pub enum RoomsError {
 impl fmt::Display for RoomsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Disabled => f.write_str("the rooms capability is not granted: add rooms to XAT_CAPABILITIES"),
+            Self::Disabled => {
+                f.write_str("the rooms capability is not granted: add rooms to XAT_CAPABILITIES")
+            }
             Self::Validation(e) => e.fmt(f),
             Self::Config(e) => e.fmt(f),
             Self::Service(e) => e.fmt(f),

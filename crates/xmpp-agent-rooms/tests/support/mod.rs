@@ -35,7 +35,12 @@ pub struct Reply {
 
 impl Reply {
     pub fn new(status: u16, body: &str) -> Self {
-        Self { status, body: body.to_owned(), location: None, delay: Duration::ZERO }
+        Self {
+            status,
+            body: body.to_owned(),
+            location: None,
+            delay: Duration::ZERO,
+        }
     }
 }
 
@@ -51,27 +56,49 @@ impl Fake {
     /// Start a fake that answers every request with `reply(&request)`.
     pub fn start(reply: impl Fn(&Seen) -> Reply + Send + 'static) -> Self {
         let server = Arc::new(Server::http("127.0.0.1:0").expect("bind loopback"));
-        let url = format!("http://{}", server.server_addr().to_ip().expect("an IP address"));
+        let url = format!(
+            "http://{}",
+            server.server_addr().to_ip().expect("an IP address")
+        );
         let seen = Arc::new(Mutex::new(Vec::new()));
         let (loop_server, loop_seen) = (Arc::clone(&server), Arc::clone(&seen));
         let handle = thread::spawn(move || {
             for mut request in loop_server.incoming_requests() {
                 let mut body = String::new();
-                request.as_reader().read_to_string(&mut body).expect("read body");
-                let header = request.headers().iter().find(|h| h.field.equiv("Authorization")).map(|h| h.value.to_string());
-                let record = Seen { method: request.method().to_string(), path: request.url().to_owned(), authorization: header, body };
+                request
+                    .as_reader()
+                    .read_to_string(&mut body)
+                    .expect("read body");
+                let header = request
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv("Authorization"))
+                    .map(|h| h.value.to_string());
+                let record = Seen {
+                    method: request.method().to_string(),
+                    path: request.url().to_owned(),
+                    authorization: header,
+                    body,
+                };
                 let answer = reply(&record);
                 loop_seen.lock().expect("lock").push(record);
                 thread::sleep(answer.delay);
-                let mut response = Response::from_string(answer.body).with_status_code(answer.status);
+                let mut response =
+                    Response::from_string(answer.body).with_status_code(answer.status);
                 if let Some(location) = answer.location {
-                    response = response.with_header(Header::from_bytes("Location", location).expect("header"));
+                    response = response
+                        .with_header(Header::from_bytes("Location", location).expect("header"));
                 }
                 // The client may have given up already (a timeout test); that is not an error here.
                 let _ = request.respond(response);
             }
         });
-        Self { url, seen, server, handle: Some(handle) }
+        Self {
+            url,
+            seen,
+            server,
+            handle: Some(handle),
+        }
     }
 
     /// A fake that always answers the same way.
@@ -87,7 +114,11 @@ impl Fake {
 
     /// The settings that point a client at this fake.
     pub fn env(&self) -> Env {
-        Env { rights_url: Some(self.url.clone()), token: Some(TOKEN.to_owned()), capabilities: Some("rooms".to_owned()) }
+        Env {
+            rights_url: Some(self.url.clone()),
+            token: Some(TOKEN.to_owned()),
+            capabilities: Some("rooms".to_owned()),
+        }
     }
 
     /// Actions bound to this fake, with `rooms` granted.
@@ -96,7 +127,11 @@ impl Fake {
     }
 
     /// Actions bound to this fake with chosen capabilities and timeout.
-    pub fn rooms_with(&self, capabilities: Capabilities, timeout: Duration) -> Rooms<HttpTransport> {
+    pub fn rooms_with(
+        &self,
+        capabilities: Capabilities,
+        timeout: Duration,
+    ) -> Rooms<HttpTransport> {
         let mut config = Config::load(&self.env(), None).expect("config");
         config.timeout = timeout;
         Rooms::new(HttpTransport::new(config), capabilities)
