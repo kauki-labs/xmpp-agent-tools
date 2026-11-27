@@ -111,7 +111,8 @@ jobs:
       - name: zizmor
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 -m zizmor --format plain .github/workflows
+        run: |
+          "$HOME/.local/bin/zizmor" --format plain .github/workflows
 
   merge-gate:
     name: Merge gate
