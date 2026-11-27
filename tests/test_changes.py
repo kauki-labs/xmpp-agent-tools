@@ -52,7 +52,7 @@ class Classify(unittest.TestCase):
 class Rust(unittest.TestCase):
     def test_rust_sources_and_manifests_run_the_rust_job(self):
         for path in ("crates/xmpp-agent-common/src/redact.rs", "build.rs", "Cargo.toml", "Cargo.lock", "crates/x/Cargo.toml", "rust-toolchain.toml",
-                     "rustfmt.toml", ".rustfmt.toml", "clippy.toml", ".cargo/config.toml", "flake.nix", "flake.lock"):
+                     "rustfmt.toml", ".rustfmt.toml", "clippy.toml", ".cargo/config.toml", "flake.nix", "flake.lock", "rust-toolchain"):
             self.assertTrue(changes.classify(["README.md", path])["rust"], path)
 
     def test_a_change_without_rust_files_skips_the_rust_job(self):
@@ -69,6 +69,25 @@ class Rust(unittest.TestCase):
 
     def test_a_rust_change_is_also_a_code_change(self):
         self.assertEqual(changes.classify(["crates/x/src/lib.rs"]), {"code": True, "workflows": False, "rust": True})
+
+
+class DiffCommand(unittest.TestCase):
+    """The workflow feeds `git diff --name-only` to the classifier. By default git prints only the new name of a rename (the old
+    `.rs` path is missing from the list) and quotes non-ASCII paths (`"na\\303\\257ve.rs"` does not end in `.rs`). Both make `rust` false
+    for a Rust change, so the command must turn them off."""
+
+    def setUp(self):
+        with open(os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "pr.yaml"), encoding="utf-8") as workflow:
+            self.lines = [line for line in workflow.read().splitlines() if "git" in line and "diff" in line and "ci/changes.py" in line]
+
+    def test_the_workflow_has_one_diff_command(self):
+        self.assertEqual(len(self.lines), 1, self.lines)
+
+    def test_renames_are_listed_as_a_delete_and_an_add(self):
+        self.assertIn("--no-renames", self.lines[0])
+
+    def test_paths_are_not_quoted(self):
+        self.assertIn("core.quotePath=false", self.lines[0])
 
 
 class Main(unittest.TestCase):

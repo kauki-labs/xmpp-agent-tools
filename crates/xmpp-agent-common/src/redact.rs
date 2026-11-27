@@ -358,6 +358,14 @@ mod tests {
         assert_eq!(redact("PWD=1\u{1f}x"), "PWD=[redacted]\u{1f}x");
     }
 
+    #[test]
+    fn redact_should_match_keywords_when_a_dotless_i_replaces_i() {
+        // Python's `re.IGNORECASE` folds U+0131 to `i`; the `regex` crate does not. Turkish lowercasing of `API_KEY` gives `apı_key`.
+        assert_eq!(redact("apı_key=abc123"), "apı_key=[redacted]");
+        assert_eq!(redact("credentıal=hunter2"), "credentıal=[redacted]");
+        assert_eq!(redact("authorızation: abc123"), "authorızation: [redacted]");
+    }
+
     // Describe
 
     #[test]
