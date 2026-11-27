@@ -23,30 +23,50 @@ const DIGIT_ZEROS: [u32; 68] = [
 
 /// Whether Python's `str.isspace` is true for the character.
 pub(crate) fn is_space(c: char) -> bool {
-    let _ = c;
-    false
+    c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
 }
 
 /// Python's `str.strip()` without arguments.
 pub(crate) fn strip(text: &str) -> &str {
-    text
+    text.trim_matches(is_space)
 }
 
 /// Python's `str.split(None, 1)`: the first word and the rest with its leading whitespace removed, or `None` when there is no word.
 pub(crate) fn split_first_word(text: &str) -> Option<(&str, &str)> {
-    let _ = text;
-    None
+    let text = text.trim_start_matches(is_space);
+    if text.is_empty() {
+        return None;
+    }
+    match text.find(is_space) {
+        Some(end) => Some((&text[..end], text[end..].trim_start_matches(is_space))),
+        None => Some((text, "")),
+    }
 }
 
 /// Python's `str.lower()`.
 pub(crate) fn lower(text: &str) -> String {
-    text.to_owned()
+    text.to_lowercase()
 }
 
 /// Whether Python treats the value as true: not null, false, zero, or an empty string, array or object.
 pub(crate) fn truthy(value: &Value) -> bool {
-    let _ = value;
-    false
+    match value {
+        Value::Null => false,
+        Value::Bool(flag) => *flag,
+        Value::Number(number) => number.as_f64() != Some(0.0),
+        Value::String(text) => !text.is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(members) => !members.is_empty(),
+    }
+}
+
+/// The value of a Unicode decimal digit, or `None` for any other character.
+fn digit_value(c: char) -> Option<usize> {
+    let code = u32::from(c);
+    DIGIT_ZEROS
+        .iter()
+        .find(|zero| (**zero..**zero + 10).contains(&code))
+        .map(|zero| (code - zero) as usize)
 }
 
 /// The numbers of a text that `\d+(?:\s*[,\s]\s*\d+)*` matches in full, read as `int()` reads them.
@@ -54,8 +74,35 @@ pub(crate) fn truthy(value: &Value) -> bool {
 /// `None` when the text does not match. A number too large for `usize` saturates: it is above any option count either way. (Python
 /// 3.13 raises `ValueError` for a number of more than 4300 digits; the port rejects it as out of range.)
 pub(crate) fn parse_numbers(text: &str) -> Option<Vec<usize>> {
-    let _ = text;
-    None
+    let mut numbers = Vec::new();
+    let mut rest = text;
+    loop {
+        let digits = rest
+            .find(|c| digit_value(c).is_none())
+            .unwrap_or(rest.len());
+        if digits == 0 {
+            return None;
+        }
+        let value = rest[..digits]
+            .chars()
+            .filter_map(digit_value)
+            .fold(0usize, |sum, digit| {
+                sum.saturating_mul(10).saturating_add(digit)
+            });
+        numbers.push(value);
+        rest = &rest[digits..];
+        if rest.is_empty() {
+            return Some(numbers);
+        }
+        // Between two numbers: whitespace around at most one comma, and at least one character.
+        let gap = rest
+            .find(|c: char| !is_space(c) && c != ',')
+            .unwrap_or(rest.len());
+        if gap == rest.len() || rest[..gap].matches(',').count() > 1 {
+            return None;
+        }
+        rest = &rest[gap..];
+    }
 }
 
 #[cfg(test)]
