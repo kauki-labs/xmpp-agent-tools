@@ -1,0 +1,18 @@
+---
+version: 2
+updates:
+  # Dependabot updates flake.lock. Renovate's nix manager cannot do it on its hosted runners (it needs `nix flake update` to compute
+  # narHash values), so it is disabled in renovate.json; Renovate keeps the action pins, the Cargo dependencies and the pinned tools.
+  - package-ecosystem: "nix"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "02:00"
+      timezone: "UTC"
+    cooldown:
+      default-days: 7
+    groups:
+      nix-flake-inputs:
+        patterns:
+          - "*"
