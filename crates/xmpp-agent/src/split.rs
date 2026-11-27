@@ -8,7 +8,57 @@ pub const MAX_MESSAGE_CHARS: usize = 3000;
 /// A line longer than `max_chars` is cut at a character boundary. Blank text gives no message. Joining the messages with a newline gives
 /// the text again, except that a cut line loses no character and blank edges are trimmed.
 pub fn split_message(text: &str, max_chars: usize) -> Vec<String> {
-    vec![text.to_owned()]
+    let max = max_chars.max(1);
+    let mut messages: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_len = 0usize;
+    let mut started = false;
+    fn flush(
+        messages: &mut Vec<String>,
+        current: &mut String,
+        current_len: &mut usize,
+        started: &mut bool,
+    ) {
+        let message = current.trim_matches('\n');
+        if !message.trim().is_empty() {
+            messages.push(message.to_owned());
+        }
+        current.clear();
+        *current_len = 0;
+        *started = false;
+    }
+    for line in text.lines() {
+        let len = line.chars().count();
+        if len > max {
+            flush(&mut messages, &mut current, &mut current_len, &mut started);
+            let chars: Vec<char> = line.chars().collect();
+            let mut pieces = chars
+                .chunks(max)
+                .map(|piece| piece.iter().collect::<String>())
+                .collect::<Vec<_>>();
+            let last = pieces.pop().unwrap_or_default();
+            for piece in pieces {
+                messages.push(piece);
+            }
+            current_len = last.chars().count();
+            current = last;
+            started = true;
+            continue;
+        }
+        let joined = if started { current_len + 1 + len } else { len };
+        if started && joined > max {
+            flush(&mut messages, &mut current, &mut current_len, &mut started);
+        }
+        if started {
+            current.push('\n');
+            current_len += 1;
+        }
+        current.push_str(line);
+        current_len += len;
+        started = true;
+    }
+    flush(&mut messages, &mut current, &mut current_len, &mut started);
+    messages
 }
 
 #[cfg(test)]
@@ -44,7 +94,7 @@ mod splitting {
     #[rstest]
     #[case("xxxxxxx", 3, &["xxx", "xxx", "x"])]
     #[case("ab\nxxxxxxx", 3, &["ab", "xxx", "xxx", "x"])]
-    #[case("xxxxxxx\nab", 3, &["xxx", "xxx", "x\nab"])]
+    #[case("xxxxxxx\nab", 3, &["xxx", "xxx", "x", "ab"])]
     #[case("xxxxxxxx\nab", 3, &["xxx", "xxx", "xx", "ab"])]
     fn split_message_should_cut_a_long_line_when_it_exceeds_the_limit(
         #[case] text: &str,

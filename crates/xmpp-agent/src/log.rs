@@ -2,6 +2,9 @@
 
 use std::path::Path;
 
+use serde_json::json;
+use xmpp_agent_common::redact::redact;
+
 /// Longest error text in the log, in characters.
 pub const ERROR_MAX_CHARS: usize = 200;
 
@@ -54,8 +57,38 @@ pub enum LogEvent {
 
 /// Format one log line (no trailing newline). `ts_ms` is the time in milliseconds since the Unix epoch.
 pub fn jsonl(ts_ms: u64, event: &LogEvent) -> String {
-    let _ = (ts_ms, event);
-    String::new()
+    let clean = |text: &str| {
+        redact(text)
+            .chars()
+            .take(ERROR_MAX_CHARS)
+            .collect::<String>()
+    };
+    let value = match event {
+        LogEvent::Started => json!({"ts": ts_ms, "event": "started"}),
+        LogEvent::Stopped => json!({"ts": ts_ms, "event": "stopped"}),
+        LogEvent::AgentStarted { session_id } => {
+            json!({"ts": ts_ms, "event": "agent_started", "session_id": clean(session_id)})
+        }
+        LogEvent::AgentExited { reason } => {
+            json!({"ts": ts_ms, "event": "agent_exited", "reason": clean(reason)})
+        }
+        LogEvent::ApprovalAsked { request_id, tool } => {
+            json!({"ts": ts_ms, "event": "approval_asked", "request_id": request_id, "tool": clean(tool)})
+        }
+        LogEvent::ApprovalDecided {
+            request_id,
+            tool,
+            behavior,
+            reason,
+        } => {
+            json!({"ts": ts_ms, "event": "approval_decided", "request_id": request_id, "tool": clean(tool), "behavior": behavior, "reason": reason})
+        }
+        LogEvent::IgnoredSender { from } => {
+            json!({"ts": ts_ms, "event": "ignored_sender", "from": from})
+        }
+        LogEvent::Error { what } => json!({"ts": ts_ms, "event": "error", "what": clean(what)}),
+    };
+    value.to_string()
 }
 
 /// Where log events go.

@@ -2,47 +2,86 @@
 
 use serde_json::Value;
 use xmpp_agent_acp::PermOption;
-use xmpp_agent_client::router::Rejected;
+use xmpp_agent_client::router::{Reason, Rejected};
+use xmpp_agent_common::redact::describe_tool;
+
+use crate::split::{MAX_MESSAGE_CHARS, split_message};
 
 /// Longest tool line, in characters.
 pub const TOOL_LINE_MAX_CHARS: usize = 200;
 
 /// The help text of `/help`.
-pub const HELP: &str = "";
+pub const HELP: &str = "Commands: /new starts a fresh session, /stop cancels the turn, /status shows the state, /help shows this. Other /commands go to the agent when it has them.";
 
 /// One short line for a tool call: the redacted description, never the tool's output.
 pub fn tool_line(title: &str, raw_input: &Value) -> String {
-    let _ = (title, raw_input);
-    String::new()
+    let described = describe_tool(title, raw_input, TOOL_LINE_MAX_CHARS);
+    format!("tool: {}", described.replace(['\n', '\r'], " "))
 }
 
 /// The messages that end a turn: the agent's text split for chat, or a short note when the turn said nothing.
 pub fn turn_messages(text: &str, stop_reason: &str) -> Vec<String> {
-    let _ = stop_reason;
-    vec![text.to_owned()]
+    let mut messages = split_message(text, MAX_MESSAGE_CHARS);
+    let cancelled = stop_reason == "cancelled";
+    if messages.is_empty() && !cancelled {
+        messages.push("The agent finished without a message.".to_owned());
+    }
+    if cancelled {
+        messages.push("Stopped.".to_owned());
+    }
+    messages
 }
 
 /// The id of the option that allows (or refuses) a call: once first, then always. `None` when the agent offers neither.
 pub fn pick_option(options: &[PermOption], allow: bool) -> Option<String> {
-    let _ = (options, allow);
-    None
+    let (once, always) = if allow {
+        ("allow_once", "allow_always")
+    } else {
+        ("reject_once", "reject_always")
+    };
+    [once, always]
+        .iter()
+        .find_map(|kind| options.iter().find(|option| option.kind == *kind))
+        .map(|option| option.id.clone())
 }
 
 /// The prompt sent to the agent after an approval timed out, so it can continue with independent work.
 pub fn blocked_prompt(tool: &str) -> String {
-    tool.to_owned()
+    format!(
+        "The step \"{tool}\" is blocked on a human who has not answered, so it was denied. Do not retry it. Continue with independent work, \
+         and say what you need from the human when you are done."
+    )
 }
 
 /// The prompt that tells the agent why a call was denied with a note.
 pub fn denied_prompt(tool: &str, note: &str) -> String {
-    let _ = note;
-    tool.to_owned()
+    format!("The operator denied the step \"{tool}\": {note} Do not retry it; continue without it.")
 }
 
 /// The one-line reply to a rejected message; `None` for an empty message.
 pub fn rejection_text(rejected: &Rejected) -> Option<String> {
-    let _ = rejected;
-    None
+    let name = &rejected.detail;
+    match rejected.reason {
+        Reason::Empty => None,
+        Reason::Interactive => Some(format!("/{name} only works in a terminal.")),
+        Reason::Unknown if name.is_empty() => {
+            Some("Unknown command. Send /help for the commands.".to_owned())
+        }
+        Reason::Unknown if rejected.suggestions.is_empty() => Some(format!(
+            "Unknown command /{name}. Send /help for the commands."
+        )),
+        Reason::Unknown => {
+            let suggestions: Vec<String> = rejected
+                .suggestions
+                .iter()
+                .map(|s| format!("/{s}"))
+                .collect();
+            Some(format!(
+                "Unknown command /{name}. Did you mean {}?",
+                suggestions.join(", ")
+            ))
+        }
+    }
 }
 
 /// The text of `/status`.
@@ -52,8 +91,15 @@ pub fn status_text(
     session_id: Option<&str>,
     pending_approvals: usize,
 ) -> String {
-    let _ = (running, busy, session_id, pending_approvals);
-    String::new()
+    let state = match (running, busy) {
+        (false, _) => "stopped. Send /new to start a new session".to_owned(),
+        (true, true) => "running, busy".to_owned(),
+        (true, false) => "running, idle".to_owned(),
+    };
+    let session = session_id
+        .map(|id| format!(" Session: {id}."))
+        .unwrap_or_default();
+    format!("Agent: {state}.{session} Approvals waiting: {pending_approvals}.")
 }
 
 #[cfg(test)]

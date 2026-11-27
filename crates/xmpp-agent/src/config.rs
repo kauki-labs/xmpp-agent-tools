@@ -4,6 +4,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde::Deserialize;
 use xmpp_agent_acp::SpawnConfig;
 
 /// Default time an approval waits for an answer, in seconds.
@@ -36,7 +37,7 @@ impl Secret {
 
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str("Secret([redacted])")
     }
 }
 
@@ -119,6 +120,77 @@ pub struct Settings {
     pub log_path: Option<PathBuf>,
 }
 
+/// The keys of the config file. Unknown keys are an error, so a password written into the file is refused, not ignored.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileSettings {
+    jid: Option<String>,
+    password_file: Option<String>,
+    server_host: Option<String>,
+    server_port: Option<u16>,
+    agent_command: Option<String>,
+    agent_args: Option<Vec<String>>,
+    entrypoint: Option<String>,
+    cwd: Option<String>,
+    allowed: Option<Vec<String>>,
+    approvers: Option<Vec<String>>,
+    approval_timeout_secs: Option<u64>,
+    log_path: Option<String>,
+}
+
+/// The agent command when the file names none.
+const DEFAULT_AGENT_COMMAND: &str = "claude-agent-acp";
+
+fn invalid(field: &'static str, reason: &str) -> ConfigError {
+    ConfigError::Invalid {
+        field,
+        reason: reason.to_owned(),
+    }
+}
+
+/// An error text that names the line and never quotes the file: the parser's message can repeat a value.
+fn file_error(text: &str, error: &toml::de::Error) -> ConfigError {
+    let line = error.span().map_or(0, |span| {
+        text.get(..span.start)
+            .map_or(0, |head| head.matches('\n').count() + 1)
+    });
+    ConfigError::Parse(format!("not valid TOML for these keys (line {line})"))
+}
+
+fn split_list(list: &str) -> Vec<String> {
+    list.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A bare JID in lowercase: `<local>@<domain>`, one `@`, no resource, no whitespace or control character.
+fn bare_jid(field: &'static str, jid: &str) -> Result<String, ConfigError> {
+    let forbidden = |c: char| c == '/' || c.is_whitespace() || c.is_control();
+    match jid.split_once('@') {
+        Some((local, domain))
+            if !local.is_empty()
+                && !domain.is_empty()
+                && !domain.contains('@')
+                && !jid.contains(forbidden) =>
+        {
+            Ok(jid.to_lowercase())
+        }
+        _ => Err(invalid(field, "must be a bare JID: <local>@<domain>")),
+    }
+}
+
+fn bare_list(field: &'static str, jids: &[String]) -> Result<Vec<String>, ConfigError> {
+    let mut out: Vec<String> = Vec::new();
+    for jid in jids {
+        let jid = bare_jid(field, jid)?;
+        if !out.contains(&jid) {
+            out.push(jid);
+        }
+    }
+    Ok(out)
+}
+
 impl Settings {
     /// Parse the TOML text of the config file (if any), apply the environment over it, and validate.
     ///
@@ -128,17 +200,117 @@ impl Settings {
         env: &Env,
         read_password_file: &dyn Fn(&Path) -> Result<String, String>,
     ) -> Result<Self, ConfigError> {
-        let _ = (file, env, read_password_file);
-        Err(ConfigError::Missing("jid"))
+        let raw = match file {
+            Some(text) => toml::from_str::<FileSettings>(text).map_err(|e| file_error(text, &e))?,
+            None => FileSettings::default(),
+        };
+        let set = |value: &Option<String>| {
+            value
+                .as_deref()
+                .filter(|v| !v.trim().is_empty())
+                .map(str::to_owned)
+        };
+
+        let jid = set(&env.jid)
+            .or_else(|| raw.jid.clone())
+            .ok_or(ConfigError::Missing("jid"))?;
+        let jid = bare_jid("jid", &jid)?;
+
+        let allowed = match set(&env.allowed) {
+            Some(list) => split_list(&list),
+            None => raw.allowed.clone().unwrap_or_default(),
+        };
+        if allowed.is_empty() {
+            return Err(ConfigError::Missing("allowed"));
+        }
+        let allowed = bare_list("allowed", &allowed)?;
+        let approvers = match (set(&env.approvers), &raw.approvers) {
+            (Some(list), _) => bare_list("approvers", &split_list(&list))?,
+            (None, Some(list)) => bare_list("approvers", list)?,
+            (None, None) => allowed.clone(),
+        };
+
+        let password = match set(&env.password) {
+            Some(password) => password,
+            None => {
+                let path = set(&env.password_file)
+                    .or_else(|| raw.password_file.clone())
+                    .ok_or(ConfigError::Missing("password"))?;
+                let text =
+                    read_password_file(Path::new(&path)).map_err(ConfigError::PasswordFile)?;
+                let password = text.trim_end_matches(['\r', '\n']);
+                if password.is_empty() {
+                    return Err(ConfigError::Missing("password"));
+                }
+                password.to_owned()
+            }
+        };
+
+        let timeout_secs = match set(&env.approval_timeout_secs) {
+            Some(text) => text.trim().parse::<u64>().map_err(|_| {
+                invalid("approval_timeout_secs", "must be a whole number of seconds")
+            })?,
+            None => raw
+                .approval_timeout_secs
+                .unwrap_or(DEFAULT_APPROVAL_TIMEOUT_SECS),
+        };
+        if !(1..=MAX_APPROVAL_TIMEOUT_SECS).contains(&timeout_secs) {
+            return Err(invalid(
+                "approval_timeout_secs",
+                &format!("must be between 1 and {MAX_APPROVAL_TIMEOUT_SECS}"),
+            ));
+        }
+
+        let host = raw.server_host.clone().filter(|h| !h.trim().is_empty());
+        let server = match (host, raw.server_port) {
+            (Some(_), Some(0)) | (None, Some(0)) => {
+                return Err(invalid("server_port", "must be between 1 and 65535"));
+            }
+            (Some(host), port) => Some((host, port.unwrap_or(DEFAULT_SERVER_PORT))),
+            (None, Some(_)) => return Err(invalid("server_port", "needs server_host")),
+            (None, None) => None,
+        };
+
+        let agent_command = raw
+            .agent_command
+            .clone()
+            .unwrap_or_else(|| DEFAULT_AGENT_COMMAND.to_owned());
+        if agent_command.trim().is_empty() {
+            return Err(invalid("agent_command", "must not be empty"));
+        }
+
+        Ok(Self {
+            jid,
+            password: Secret::new(password),
+            server,
+            agent_command,
+            agent_args: raw.agent_args.clone().unwrap_or_default(),
+            entrypoint: raw
+                .entrypoint
+                .clone()
+                .filter(|e| !e.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_ENTRYPOINT.to_owned()),
+            cwd: PathBuf::from(
+                set(&env.cwd)
+                    .or_else(|| raw.cwd.clone())
+                    .unwrap_or_else(|| ".".to_owned()),
+            ),
+            allowed,
+            approvers,
+            approval_timeout: Duration::from_secs(timeout_secs),
+            log_path: set(&env.log_path)
+                .or_else(|| raw.log_path.clone())
+                .map(PathBuf::from),
+        })
     }
 
     /// How to start the agent.
     pub fn spawn_config(&self) -> SpawnConfig {
         SpawnConfig {
-            command: String::new(),
-            args: Vec::new(),
-            env: Vec::new(),
-            cwd: PathBuf::new(),
+            command: self.agent_command.clone(),
+            args: self.agent_args.clone(),
+            env: vec![("CLAUDE_CODE_ENTRYPOINT".to_owned(), self.entrypoint.clone())],
+            cwd: self.cwd.clone(),
         }
     }
 }
