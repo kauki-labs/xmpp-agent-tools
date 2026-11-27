@@ -1,0 +1,37 @@
+name: PR
+
+on:
+  pull_request:
+  merge_group:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Add new check jobs here, then list them in `needs` of the merge gate below.
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No checks defined yet."
+
+  # The only required status check on main. It passes when every job in `needs`
+  # succeeded or was skipped, and fails when any of them failed or was cancelled.
+  merge-gate:
+    name: Merge gate
+    if: always()
+    needs: [checks]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all jobs to be green
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS"
+          if echo "$NEEDS" | grep -Eq '"result": "(failure|cancelled)"'; then
+            echo "A required job did not pass." >&2
+            exit 1
+          fi
