@@ -3,97 +3,284 @@
 use std::collections::HashMap;
 
 use tokio_xmpp::Stanza;
+use xmpp_parsers::chatstates::ChatState;
+use xmpp_parsers::data_forms::{DataForm, DataFormType, Field, FieldType};
+use xmpp_parsers::http_upload::SlotRequest;
 use xmpp_parsers::iq::Iq;
-use xmpp_parsers::mam::Fin;
-use xmpp_parsers::message::Message;
-use xmpp_parsers::presence::Presence;
+use xmpp_parsers::jid::Jid;
+use xmpp_parsers::mam::{self, Fin};
+use xmpp_parsers::message::{Id, Lang, Message, MessageType};
+use xmpp_parsers::message_correct::Replace;
+use xmpp_parsers::muc::muc::History;
+use xmpp_parsers::muc::{Muc, MucUser};
+use xmpp_parsers::presence::{Presence, Type as PresenceType};
+use xmpp_parsers::reactions::{Reaction, Reactions};
+use xmpp_parsers::rsm::SetQuery;
+use xmpp_parsers::stanza_error::{DefinedCondition, ErrorType, StanzaError};
 
 use crate::{Archived, Error, Event};
 
-pub fn chat(_to: &str, _id: &str, _body: &str) -> Result<Message, Error> {
-    Ok(Message::new(None))
+fn jid(s: &str) -> Result<Jid, Error> {
+    s.parse()
+        .map_err(|e| Error::InvalidArgument(format!("{s:?}: {e}")))
 }
 
-pub fn groupchat(_room: &str, _id: &str, _body: &str) -> Result<Message, Error> {
-    Ok(Message::new(None))
+fn message(kind: MessageType, to: &str, id: &str) -> Result<Message, Error> {
+    let mut m = Message::new_with_type(kind, Some(jid(to)?));
+    m.id = Some(Id(id.to_string()));
+    Ok(m)
 }
 
+fn kind(groupchat: bool) -> MessageType {
+    if groupchat {
+        MessageType::Groupchat
+    } else {
+        MessageType::Chat
+    }
+}
+
+pub fn chat(to: &str, id: &str, body: &str) -> Result<Message, Error> {
+    let mut m = message(MessageType::Chat, to, id)?;
+    m.bodies.insert(Lang::default(), body.to_string());
+    Ok(m)
+}
+
+pub fn groupchat(room: &str, id: &str, body: &str) -> Result<Message, Error> {
+    let mut m = message(MessageType::Groupchat, room, id)?;
+    m.bodies.insert(Lang::default(), body.to_string());
+    Ok(m)
+}
+
+/// A message with `id` that replaces the earlier message `replaces` (XEP-0308).
 pub fn correction(
-    _to: &str,
-    _groupchat: bool,
-    _id: &str,
-    _replaces: &str,
-    _body: &str,
+    to: &str,
+    groupchat: bool,
+    id: &str,
+    replaces: &str,
+    body: &str,
 ) -> Result<Message, Error> {
-    Ok(Message::new(None))
+    let mut m = message(kind(groupchat), to, id)?;
+    m.bodies.insert(Lang::default(), body.to_string());
+    m.payloads.push(
+        Replace {
+            id: Id(replaces.to_string()),
+        }
+        .into(),
+    );
+    Ok(m)
 }
 
 pub fn reaction(
-    _to: &str,
-    _groupchat: bool,
-    _id: &str,
-    _target: &str,
-    _emojis: &[&str],
+    to: &str,
+    groupchat: bool,
+    id: &str,
+    target: &str,
+    emojis: &[&str],
 ) -> Result<Message, Error> {
-    Ok(Message::new(None))
+    let mut m = message(kind(groupchat), to, id)?;
+    let reactions = emojis
+        .iter()
+        .map(|e| Reaction {
+            emoji: e.to_string(),
+        })
+        .collect();
+    m.payloads.push(
+        Reactions {
+            id: target.to_string(),
+            reactions,
+        }
+        .into(),
+    );
+    Ok(m)
 }
 
-pub fn chat_state(_to: &str, _id: &str, _state: &str) -> Result<Message, Error> {
-    Ok(Message::new(None))
+/// A chat state notification (XEP-0085) to a one-to-one peer.
+pub fn chat_state(to: &str, id: &str, state: &str) -> Result<Message, Error> {
+    let state = match state {
+        "active" => ChatState::Active,
+        "composing" => ChatState::Composing,
+        "paused" => ChatState::Paused,
+        "inactive" => ChatState::Inactive,
+        "gone" => ChatState::Gone,
+        other => {
+            return Err(Error::InvalidArgument(format!(
+                "unknown chat state {other:?}"
+            )));
+        }
+    };
+    let mut m = message(MessageType::Chat, to, id)?;
+    m.payloads.push(state.into());
+    Ok(m)
 }
 
-pub fn join(_room: &str, _nick: &str) -> Result<Presence, Error> {
-    Ok(Presence::available())
+/// Join a room as `nick`, asking for no history: the archive has it, and a replay would look like live messages.
+pub fn join(room: &str, nick: &str) -> Result<Presence, Error> {
+    if nick.is_empty() {
+        return Err(Error::InvalidArgument("empty nick".into()));
+    }
+    let to = jid(&format!("{room}/{nick}"))?;
+    Ok(Presence::available()
+        .with_to(to)
+        .with_payload(Muc::new().with_history(History::new().with_maxstanzas(0))))
 }
 
 pub fn initial_presence() -> Presence {
-    Presence::new(xmpp_parsers::presence::Type::Unavailable)
+    Presence::available()
 }
 
+/// An archive query (XEP-0313) for the newest `limit` messages before the archive id `before` (the newest overall when `None`).
+/// A room is queried on the room itself; a peer is a filter on our own archive.
 pub fn history_query(
-    _id: &str,
-    _queryid: &str,
-    _with: Option<&str>,
-    _room: bool,
-    _limit: usize,
-    _before: Option<&str>,
+    id: &str,
+    queryid: &str,
+    with: Option<&str>,
+    room: bool,
+    limit: usize,
+    before: Option<&str>,
 ) -> Result<Iq, Error> {
-    Ok(Iq::Result {
-        from: None,
-        to: None,
-        id: String::new(),
-        payload: None,
+    let (to, form) = match (room, with) {
+        (true, Some(room)) => (Some(jid(room)?), None),
+        (true, None) => {
+            return Err(Error::InvalidArgument(
+                "a room history needs the room".into(),
+            ));
+        }
+        (false, None) => (None, None),
+        (false, Some(peer)) => {
+            let peer = jid(peer)?;
+            let mut field = Field::new("with", FieldType::TextSingle);
+            field.values.push(peer.to_string());
+            (
+                None,
+                Some(DataForm::new(
+                    DataFormType::Submit,
+                    "urn:xmpp:mam:2",
+                    vec![field],
+                )),
+            )
+        }
+    };
+    let query = mam::Query {
+        queryid: Some(mam::QueryId(queryid.to_string())),
+        node: None,
+        form,
+        // an empty <before/> asks for the last page
+        set: Some(SetQuery {
+            max: Some(limit),
+            after: None,
+            before: Some(before.unwrap_or("").to_string()),
+            index: None,
+        }),
+        flip_page: false,
+    };
+    let iq = Iq::from_set(id, query);
+    Ok(match to {
+        Some(to) => iq.with_to(to),
+        None => iq,
     })
 }
 
 pub fn slot_request(
-    _host: &str,
-    _id: &str,
-    _filename: &str,
-    _size: u64,
-    _content_type: &str,
+    host: &str,
+    id: &str,
+    filename: &str,
+    size: u64,
+    content_type: &str,
 ) -> Result<Iq, Error> {
-    Ok(Iq::Result {
-        from: None,
-        to: None,
-        id: String::new(),
-        payload: None,
-    })
+    let req = SlotRequest {
+        filename: filename.to_string(),
+        size,
+        content_type: Some(content_type.to_string()),
+    };
+    Ok(Iq::from_get(id, req).with_to(jid(host)?))
 }
 
-/// The archive entry and the query id of a MAM result message, or `None` when the message is not one.
-pub fn mam_result(_m: &Message) -> Option<(String, Archived)> {
-    None
+/// The archive entry and the query id of a MAM result message, or `None` when the message is not one or has no body.
+pub fn mam_result(m: &Message) -> Option<(String, Archived)> {
+    let r = m
+        .payloads
+        .iter()
+        .find_map(|el| mam::Result_::try_from(el.clone()).ok())?;
+    let inner = &r.forwarded.message;
+    let body = inner
+        .bodies
+        .get(&Lang::default())
+        .or_else(|| inner.bodies.values().next())?
+        .clone();
+    Some((
+        r.queryid?.0,
+        Archived {
+            id: r.id,
+            from: inner
+                .from
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
+            body,
+            stamp: r
+                .forwarded
+                .delay
+                .map(|d| d.stamp.0.to_rfc3339())
+                .unwrap_or_default(),
+        },
+    ))
 }
 
-/// The query id of the `<fin/>` of an archive query is not in the stanza; the iq id is. Returns the iq id and the fin.
-pub fn mam_fin(_iq: &Iq) -> Option<(String, Fin)> {
-    None
+/// The iq id and the `<fin/>` of a result that ends an archive query.
+pub fn mam_fin(iq: &Iq) -> Option<(String, Fin)> {
+    match iq {
+        Iq::Result {
+            id,
+            payload: Some(el),
+            ..
+        } => Fin::try_from(el.clone()).ok().map(|f| (id.clone(), f)),
+        _ => None,
+    }
+}
+
+/// How a room join ended, if `p` is the answer: the room echoes our own presence on success, or sends an error.
+pub fn join_result(p: &Presence, room: &str, nick: &str) -> Option<Result<(), String>> {
+    if p.from.as_ref().map(ToString::to_string) != Some(format!("{room}/{nick}"))
+        && p.from.as_ref().map(|f| f.to_bare().to_string()) != Some(room.to_string())
+    {
+        return None;
+    }
+    match p.type_ {
+        PresenceType::Error => Some(Err(format!("{room}: join refused"))),
+        PresenceType::None
+            if p.from
+                .as_ref()
+                .and_then(|f| f.resource())
+                .is_some_and(|r| r.as_str() == nick) =>
+        {
+            Some(Ok(()))
+        }
+        _ => None,
+    }
 }
 
 /// The reply to an iq the server sent us: an empty result to a ping, an error to every other get or set, nothing to a result.
-pub fn iq_reply(_iq: &Iq) -> Option<Iq> {
-    None
+pub fn iq_reply(iq: &Iq) -> Option<Iq> {
+    let (from, id, payload) = match iq {
+        Iq::Get {
+            from, id, payload, ..
+        }
+        | Iq::Set {
+            from, id, payload, ..
+        } => (from, id, payload),
+        _ => return None,
+    };
+    let to = from.clone()?;
+    if payload.is("ping", "urn:xmpp:ping") {
+        return Some(Iq::empty_result(to, id.clone()));
+    }
+    let error = StanzaError::new(
+        ErrorType::Cancel,
+        DefinedCondition::ServiceUnavailable,
+        "en",
+        "",
+    );
+    Some(Iq::from_error(id.clone(), error).with_to(to))
 }
 
 /// Turns incoming stanzas into events and remembers the room state that needs: our nick per room and the real JID per occupant.
@@ -113,8 +300,123 @@ impl Parser {
         self.nicks.insert(room.to_string(), nick.to_string());
     }
 
-    pub fn handle(&mut self, _stanza: &Stanza) -> Vec<Event> {
-        Vec::new()
+    pub fn handle(&mut self, stanza: &Stanza) -> Vec<Event> {
+        match stanza {
+            Stanza::Message(m) => self.message(m),
+            Stanza::Presence(p) => self.presence(p),
+            Stanza::Iq(_) => Vec::new(),
+        }
+    }
+
+    fn presence(&mut self, p: &Presence) -> Vec<Event> {
+        let available = match p.type_ {
+            PresenceType::None => true,
+            PresenceType::Unavailable => false,
+            _ => return Vec::new(),
+        };
+        let Some(from) = &p.from else {
+            return Vec::new();
+        };
+        if let Some(nick) = from.resource() {
+            let key = (from.to_bare().to_string(), nick.to_string());
+            let real = p
+                .payloads
+                .iter()
+                .filter_map(|el| MucUser::try_from(el.clone()).ok())
+                .flat_map(|u| u.items)
+                .find_map(|i| i.jid);
+            match (available, real) {
+                (true, Some(real)) => {
+                    self.occupants.insert(key, real.to_string());
+                }
+                (false, _) => {
+                    self.occupants.remove(&key);
+                }
+                _ => {}
+            }
+        }
+        vec![Event::Presence {
+            from: from.to_string(),
+            available,
+        }]
+    }
+
+    fn message(&mut self, m: &Message) -> Vec<Event> {
+        if matches!(m.type_, MessageType::Error | MessageType::Headline) || mam_result(m).is_some()
+        {
+            return Vec::new();
+        }
+        let Some(from) = &m.from else {
+            return Vec::new();
+        };
+        let from_str = from.to_string();
+        let room_nick = if m.type_ == MessageType::Groupchat {
+            match from.resource() {
+                Some(nick) => Some((from.to_bare().to_string(), nick.to_string())),
+                None => return Vec::new(), // the room itself: a subject or a notice
+            }
+        } else {
+            None
+        };
+        let mut events = Vec::new();
+        let body = m
+            .bodies
+            .get(&Lang::default())
+            .or_else(|| m.bodies.values().next());
+        if let Some(body) = body {
+            let id = m.id.as_ref().map(|i| i.0.clone());
+            let replaces = m
+                .payloads
+                .iter()
+                .find_map(|el| Replace::try_from(el.clone()).ok())
+                .map(|r| r.id.0);
+            events.push(match &room_nick {
+                Some((room, nick)) => Event::Groupchat {
+                    room: room.clone(),
+                    nick: nick.clone(),
+                    real_jid: self.occupants.get(&(room.clone(), nick.clone())).cloned(),
+                    id,
+                    body: body.clone(),
+                    replaces,
+                    from_self: self.nicks.get(room) == Some(nick),
+                },
+                None => Event::Chat {
+                    from: from_str.clone(),
+                    id,
+                    body: body.clone(),
+                    replaces,
+                },
+            });
+        }
+        if let Some(r) = m
+            .payloads
+            .iter()
+            .find_map(|el| Reactions::try_from(el.clone()).ok())
+        {
+            events.push(Event::Reaction {
+                from: from_str.clone(),
+                target_id: r.id,
+                emojis: r.reactions.into_iter().map(|e| e.emoji).collect(),
+            });
+        }
+        if let Some(state) = m
+            .payloads
+            .iter()
+            .find_map(|el| ChatState::try_from(el.clone()).ok())
+        {
+            let state = match state {
+                ChatState::Active => "active",
+                ChatState::Composing => "composing",
+                ChatState::Paused => "paused",
+                ChatState::Inactive => "inactive",
+                ChatState::Gone => "gone",
+            };
+            events.push(Event::ChatState {
+                from: from_str,
+                state: state.to_string(),
+            });
+        }
+        events
     }
 }
 
@@ -125,6 +427,11 @@ mod tests {
 
     fn el(xml: &str) -> Element {
         xml.parse().unwrap()
+    }
+
+    /// The same element after a trip through text: an empty `<before></before>` is written with an empty text node in memory.
+    fn wire(e: Element) -> Element {
+        String::from(&e).parse().unwrap()
     }
 
     fn message(xml: &str) -> Stanza {
@@ -213,7 +520,7 @@ mod tests {
     fn builds_a_join_that_asks_for_no_history() {
         let got = Element::from(join(ROOM, "bot").unwrap());
         let want = el(
-            "<presence xmlns='jabber:client' to='room@rooms.example.org/bot'><x xmlns='http://jabber.org/protocol/muc'><history maxstanzas='0'/></x></presence>",
+            "<presence xmlns='jabber:client' to='room@rooms.example.org/bot'><priority>0</priority><x xmlns='http://jabber.org/protocol/muc'><history maxstanzas='0'/></x></presence>",
         );
         assert_eq!(got, want);
     }
@@ -222,7 +529,7 @@ mod tests {
     fn initial_presence_is_plain_available() {
         assert_eq!(
             Element::from(initial_presence()),
-            el("<presence xmlns='jabber:client'/>")
+            el("<presence xmlns='jabber:client'><priority>0</priority></presence>")
         );
     }
 
@@ -247,7 +554,9 @@ mod tests {
 
     #[test]
     fn builds_a_history_query_for_the_latest_page_of_a_room() {
-        let got = Element::from(history_query("h2", "q2", Some(ROOM), true, 5, None).unwrap());
+        let got = wire(Element::from(
+            history_query("h2", "q2", Some(ROOM), true, 5, None).unwrap(),
+        ));
         let want = el(
             "<iq xmlns='jabber:client' type='set' id='h2' to='room@rooms.example.org'><query xmlns='urn:xmpp:mam:2' queryid='q2'><set xmlns='http://jabber.org/protocol/rsm'><max>5</max><before/></set></query></iq>",
         );
@@ -505,6 +814,42 @@ mod tests {
         assert!(fin.complete);
         let other = iq("<iq xmlns='jabber:client' type='result' id='h1'/>");
         assert!(mam_fin(&other).is_none());
+    }
+
+    // ---- joining ----
+
+    fn pres(xml: &str) -> Presence {
+        Presence::try_from(el(xml)).unwrap()
+    }
+
+    #[test]
+    fn the_room_echoing_our_presence_completes_the_join() {
+        let p = pres("<presence xmlns='jabber:client' from='room@rooms.example.org/bot'/>");
+        assert_eq!(join_result(&p, ROOM, "bot"), Some(Ok(())));
+    }
+
+    #[test]
+    fn a_presence_error_from_the_room_fails_the_join() {
+        let p = pres(
+            "<presence xmlns='jabber:client' from='room@rooms.example.org/bot' type='error'><error type='cancel'><item-not-found xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/></error></presence>",
+        );
+        assert!(matches!(join_result(&p, ROOM, "bot"), Some(Err(_))));
+        let bare = pres(
+            "<presence xmlns='jabber:client' from='room@rooms.example.org' type='error'><error type='cancel'><forbidden xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/></error></presence>",
+        );
+        assert!(matches!(join_result(&bare, ROOM, "bot"), Some(Err(_))));
+    }
+
+    #[test]
+    fn other_presences_do_not_answer_a_join() {
+        for xml in [
+            "<presence xmlns='jabber:client' from='room@rooms.example.org/bob'/>",
+            "<presence xmlns='jabber:client' from='other@rooms.example.org/bot'/>",
+            "<presence xmlns='jabber:client' from='room@rooms.example.org/bot' type='unavailable'/>",
+            "<presence xmlns='jabber:client' from='room@rooms.example.org'/>",
+        ] {
+            assert_eq!(join_result(&pres(xml), ROOM, "bot"), None, "{xml}");
+        }
     }
 
     // ---- iq from the server ----
