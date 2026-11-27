@@ -25,6 +25,7 @@ jobs:
     outputs:
       code: ${{ steps.classify.outputs.code }}
       workflows: ${{ steps.classify.outputs.workflows }}
+      rust: ${{ steps.classify.outputs.rust }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,7 +38,8 @@ jobs:
         run: |
           # An unknown base (a manual run) classifies as "everything changed".
           if [ -n "$BASE_SHA" ] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
-            git diff --name-only "$BASE_SHA" "$HEAD_SHA" | python3 ci/changes.py
+            # No rename detection (a renamed file lists both names) and no path quoting (a quoted name does not end in `.rs`).
+            git -c core.quotePath=false diff --no-renames --name-only "$BASE_SHA" "$HEAD_SHA" | python3 ci/changes.py
           else
             : | python3 ci/changes.py
           fi
@@ -78,6 +80,31 @@ jobs:
       - name: Every mutation must fail the tests
         run: python3 scripts/mutation-check.py
 
+  rust:
+    name: rust
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # The owner adds the Nix binary cache step here later (the sandy repo uses cache-nix-action, pinned by SHA).
+      # - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+      - name: Format
+        run: nix build -L .#checks.x86_64-linux.fmt
+      - name: Clippy
+        run: nix build -L .#checks.x86_64-linux.clippy
+      - name: Unit tests
+        run: nix build -L .#checks.x86_64-linux.test
+
   scrub:
     name: scrub
     runs-on: ubuntu-24.04
@@ -116,7 +143,7 @@ jobs:
 
   merge-gate:
     name: Merge gate
-    needs: [changes, tests, mutation, scrub, workflows]
+    needs: [changes, tests, mutation, rust, scrub, workflows]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

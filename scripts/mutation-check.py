@@ -78,11 +78,14 @@ MUTATIONS = [
     # ci: changed-path classifier
     ("ci/changes", "markdown is no longer docs", '_DOC_SUFFIXES = (".md",)', '_DOC_SUFFIXES = (".mdx",)'),
     ("ci/changes", "license is code", 'return path == "LICENSE" or path.endswith(_DOC_SUFFIXES)', "return path.endswith(_DOC_SUFFIXES)"),
-    ("ci/changes", "an empty diff skips everything", "        return {\"code\": True, \"workflows\": True}", "        return {\"code\": False, \"workflows\": False}"),
+    ("ci/changes", "an empty diff skips everything", "        return {\"code\": True, \"workflows\": True, \"rust\": True}", "        return {\"code\": False, \"workflows\": False, \"rust\": False}"),
     ("ci/changes", "workflow prefix typo", '    workflows = any(p.startswith(".github/") for p in paths)', '    workflows = any(p.startswith(".githubx/") for p in paths)'),
     ("ci/changes", "workflow files count as code", 'code = any(not p.startswith(".github/") and not _is_doc(p) for p in paths)', "code = any(not _is_doc(p) for p in paths)"),
     ("ci/changes", "docs always count as docs", 'code = any(not p.startswith(".github/") and not _is_doc(p) for p in paths)', 'code = any(not p.startswith(".github/") and not _is_doc(p) and not p.startswith("docs/") for p in paths)'),
     ("ci/changes", "blank lines count as paths", "    paths = [p.strip() for p in paths if p and p.strip()]", "    paths = [p for p in paths if p]"),
+    ("ci/changes", "rust sources are not rust", 'return path.endswith(".rs") or', 'return path.endswith(".rss") or'),
+    ("ci/changes", "cargo manifests are not rust", '"Cargo.toml", "Cargo.lock", ', ""),
+    ("ci/changes", "the cargo directory is not rust", 'or path.startswith(".cargo/")', "or False"),
     ("ci/changes", "outputs are inverted", "'true' if value else 'false'", "'false' if value else 'true'"),
     # ci: scrub check
     ("ci/scrub", "domain rule off", '("internal-domain", re.compile(r"kauki\\.xyz", re.IGNORECASE)),', '("internal-domain", re.compile(r"neverneverxyz", re.IGNORECASE)),'),
