@@ -140,3 +140,22 @@ impl From<ServiceError> for RoomsError {
         Self::Service(e)
     }
 }
+
+#[cfg(test)]
+mod display {
+    use super::*;
+
+    #[test]
+    fn service_error_should_show_the_status_when_the_service_refused_with_text() {
+        assert!(
+            ServiceError::Invalid("x".to_owned())
+                .to_string()
+                .contains("400")
+        );
+        assert!(
+            ServiceError::Conflict("x".to_owned())
+                .to_string()
+                .contains("409")
+        );
+    }
+}

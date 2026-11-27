@@ -283,6 +283,85 @@ fn rooms_should_use_the_flag_when_the_environment_grants_nothing() -> anyhow_fre
     Ok(())
 }
 
+#[rstest]
+#[case(r#"{"error": "bad \u0074ok-7d3f9a1c5e rejected"}"#)]
+#[case(r#"{"error": "bad t\u006fk-7d3f9a1c5e"}"#)]
+#[case(r#"{"error": "bad token\u003dabc"}"#)]
+fn actions_should_not_show_the_token_when_the_service_echoes_it_json_escaped(#[case] body: &str) {
+    let fake = Fake::always(400, body);
+    let error = fake.rooms().run(&create("lab")).expect_err("400");
+    assert!(!error.to_string().contains(TOKEN), "{error}");
+}
+
+#[test]
+fn actions_should_not_show_the_token_when_the_service_echoes_it_in_the_room() {
+    let fake = Fake::always(
+        200,
+        &format!(r#"{{"room": "lab@muc.{TOKEN}.example.org", "created": true}}"#),
+    );
+    let line = fake
+        .rooms()
+        .run(&create("lab"))
+        .unwrap_or_else(|e| e.to_string());
+    assert!(!line.contains(TOKEN), "{line}");
+}
+
+#[rstest]
+#[case(r#"{"room": "", "created": true}"#)]
+#[case(r#"{"room": "@muc.example.org", "created": true}"#)]
+#[case(r#"{"room": "lab@", "created": true}"#)]
+#[case(r#"{"room": "other@muc.example.org", "created": true}"#)]
+#[case(r#"{"room": "lab", "created": true}"#)]
+#[case(r#"{"room": "lab@muc.example.org\nforged line", "created": true}"#)]
+fn create_should_fail_closed_when_the_room_is_not_the_requested_name_at_a_host(#[case] body: &str) {
+    let fake = Fake::always(200, body);
+    assert_eq!(
+        fake.rooms().run(&create("lab")),
+        Err(RoomsError::Service(ServiceError::MalformedResponse))
+    );
+}
+
+#[test]
+fn assign_should_fail_closed_when_a_200_carries_an_error_object() {
+    let fake = Fake::always(200, r#"{"error": "denied"}"#);
+    assert_eq!(
+        fake.rooms().run(&assign("lab", "alice@chat.example.org")),
+        Err(RoomsError::Service(ServiceError::MalformedResponse))
+    );
+}
+
+#[test]
+fn actions_should_fail_when_the_answer_is_larger_than_the_limit() {
+    let padding = " ".repeat(70 * 1024);
+    let fake = Fake::always(200, &format!("{{}}{padding}"));
+    assert!(matches!(
+        fake.rooms().run(&assign("lab", "alice@chat.example.org")),
+        Err(RoomsError::Service(ServiceError::Transport(_)))
+    ));
+}
+
+#[test]
+fn actions_should_name_the_status_when_the_service_sends_400_or_409() {
+    let invalid = Fake::always(400, r#"{"error": "bad name"}"#);
+    assert!(
+        invalid
+            .rooms()
+            .run(&create("lab"))
+            .expect_err("400")
+            .to_string()
+            .contains("400")
+    );
+    let conflict = Fake::always(409, r#"{"error": "locked"}"#);
+    assert!(
+        conflict
+            .rooms()
+            .run(&create("lab"))
+            .expect_err("409")
+            .to_string()
+            .contains("409")
+    );
+}
+
 /// A tiny stand-in for `anyhow`, which the workspace does not use: tests return this so `?` works on the crate's errors.
 mod anyhow_free {
     pub type Result = std::result::Result<(), Box<dyn std::error::Error>>;

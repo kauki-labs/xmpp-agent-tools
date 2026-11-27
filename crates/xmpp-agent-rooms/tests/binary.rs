@@ -124,7 +124,16 @@ fn the_binary_should_exit_with_a_usage_error_when_the_arguments_are_wrong() {
 }
 
 fn mcp_exchange(env: &[(&str, &str)], requests: &[&str]) -> Vec<serde_json::Value> {
+    mcp_exchange_with_args(&[], env, requests)
+}
+
+fn mcp_exchange_with_args(
+    args: &[&str],
+    env: &[(&str, &str)],
+    requests: &[&str],
+) -> Vec<serde_json::Value> {
     let mut child = Command::new(BIN)
+        .args(args)
         .arg("mcp")
         .env_clear()
         .envs(env.iter().copied())
@@ -192,4 +201,50 @@ fn mcp_should_exit_nonzero_when_the_capability_is_granted_but_the_settings_are_m
         "{}",
         text(&out.stderr)
     );
+}
+
+#[test]
+fn mcp_should_list_no_tools_when_the_capability_is_missing_and_the_config_file_does_not_exist() {
+    let replies = mcp_exchange_with_args(
+        &["--config", "/nonexistent/rooms.toml"],
+        &[],
+        &[INITIALIZE, INITIALIZED, LIST],
+    );
+    assert_eq!(
+        replies[1]["result"]["tools"].as_array().map(Vec::len),
+        Some(0),
+        "{replies:?}"
+    );
+}
+
+#[test]
+fn create_should_name_the_capability_when_it_is_missing_and_the_config_file_does_not_exist() {
+    let out = run(
+        &["--config", "/nonexistent/rooms.toml", "create", "lab"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("rooms capability"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
+fn create_should_not_send_the_token_through_a_proxy_when_proxy_variables_are_set() {
+    let rights = Fake::always(200, r#"{"room": "lab@muc.example.org", "created": true}"#);
+    let proxy = Fake::always(502, "");
+    let env = [
+        ("XAT_CAPABILITIES", "rooms"),
+        ("XAT_RIGHTS_URL", rights.url.as_str()),
+        ("XAT_RIGHTS_TOKEN", TOKEN),
+        ("HTTP_PROXY", proxy.url.as_str()),
+        ("http_proxy", proxy.url.as_str()),
+        ("ALL_PROXY", proxy.url.as_str()),
+    ];
+    let out = run(&["create", "lab"], &env);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(proxy.seen().is_empty(), "the proxy saw {:?}", proxy.seen());
+    assert_eq!(rights.seen().len(), 1);
 }

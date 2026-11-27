@@ -166,6 +166,8 @@ mod member_jids {
     #[case("alice@chat.example.org/phone")]
     #[case("alice/phone@chat.example.org")]
     #[case("a b@chat.example.org")]
+    #[case("al\u{0}ice@chat.example.org")]
+    #[case("alice@chat.example.org\u{7f}")]
     #[case("alice@chat example.org")]
     #[case(" alice@chat.example.org")]
     #[case("alice@chat.example.org\n")]

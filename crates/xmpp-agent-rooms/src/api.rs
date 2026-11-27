@@ -174,6 +174,14 @@ mod responses {
         assert_eq!(map_create(200, body), Err(ServiceError::MalformedResponse));
     }
 
+    #[rstest]
+    #[case(r#"{"error": "denied"}"#)]
+    #[case(r#"{"room": "lab@muc.example.org"}"#)]
+    #[case(r#"{"ok": true}"#)]
+    fn map_assign_should_fail_closed_when_a_200_object_is_not_empty(#[case] body: &str) {
+        assert_eq!(map_assign(200, body), Err(ServiceError::MalformedResponse));
+    }
+
     #[test]
     fn map_assign_should_succeed_when_the_status_is_200_and_the_body_is_an_object() {
         assert_eq!(map_assign(200, "{}"), Ok(()));

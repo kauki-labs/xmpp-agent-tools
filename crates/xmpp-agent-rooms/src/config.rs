@@ -235,6 +235,20 @@ mod settings {
         );
     }
 
+    #[rstest]
+    #[case("rights_token = 987654321\n")]
+    #[case("rights_url = 987654321\n")]
+    #[case("timeout_secs = \"987654321\"\n")]
+    #[case("987654321 = 1\n")]
+    fn load_should_not_echo_values_when_the_file_has_a_wrong_type_or_key(#[case] file: &str) {
+        let error = Config::load(&Env::default(), Some(file)).expect_err("bad file");
+        assert!(matches!(error, ConfigError::File(_)), "{error:?}");
+        assert!(
+            !format!("{error} {error:?}").contains("987654321"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn debug_should_hide_the_token_when_the_config_is_printed() {
         let config = Config::load(
