@@ -19,7 +19,9 @@ pub const DEFAULT_MAX_CHARS: usize = 400;
 /// Length limit of one argument of an unknown tool, in characters.
 const ARGUMENT_MAX_CHARS: usize = 80;
 
-const KEYWORDS: &str = "(?:password|passwd|pwd|secret|token|api[_-]?key|credential)";
+/// Python's `re.IGNORECASE` also folds U+0131 and U+0130 (dotless and dotted capital i) to `i`; the `regex` crate does not, so each `i`
+/// of a keyword and each letter class that can hold an `i` names them. Turkish lowercasing of `API_KEY` gives `apı_key`.
+const KEYWORDS: &str = "(?:password|passwd|pwd|secret|token|ap[iıİ][_-]?key|credent[iıİ]al)";
 
 /// What Python's `\s` matches in a `str` pattern that the `regex` crate's `\s` does not: U+001C to U+001F. The patterns below write
 /// `<WS>` for the whole set, so `[<WS>]` is `\s` and `[^<WS>]` is `\S`.
@@ -28,10 +30,10 @@ const WHITESPACE: &str = r"\s\x1c-\x1f";
 /// Ordered (pattern, replacement) pairs; the replacement uses the `regex` crate syntax (`${1}`).
 static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     let flag_value = format!(
-        r#"(?i)(--?[A-Za-z0-9_-]*{KEYWORDS}[A-Za-z0-9_-]*)([<WS>]+)("[^"]*"|'[^']*'|[^<WS>]+)"#
+        r#"(?i)(--?[A-Za-z0-9_ıİ-]*{KEYWORDS}[A-Za-z0-9_ıİ-]*)([<WS>]+)("[^"]*"|'[^']*'|[^<WS>]+)"#
     );
     let name_value = format!(
-        r#"(?i)\b([A-Za-z0-9_.-]*{KEYWORDS}[A-Za-z0-9_.-]*)(["']?[<WS>]*[=:][<WS>]*)("[^"]*"|'[^']*'|[^<WS>]+)"#
+        r#"(?i)\b([A-Za-z0-9_.ıİ-]*{KEYWORDS}[A-Za-z0-9_.ıİ-]*)(["']?[<WS>]*[=:][<WS>]*)("[^"]*"|'[^']*'|[^<WS>]+)"#
     );
     let patterns: [(&str, &'static str); 11] = [
         (
@@ -41,11 +43,11 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         // The Python pattern has a lookbehind for `://`; the `regex` crate has none, so the scheme is captured and put back.
         (r"(://)[^/<WS>:@]+:[^/<WS>@]+@", "${1}[redacted]@"),
         (
-            r#"(?i)(authorization[<WS>]*:[<WS>]*)(?:(?:bearer|basic|token)[<WS>]+)?[^<WS>"']+"#,
+            r#"(?i)(author[iıİ]zat[iıİ]on[<WS>]*:[<WS>]*)(?:(?:bearer|basic|token)[<WS>]+)?[^<WS>"']+"#,
             "${1}[redacted]",
         ),
         (
-            r"(?i)\bbearer[<WS>]+[A-Za-z0-9._~+/=-]{10,}",
+            r"(?i)\bbearer[<WS>]+[A-Za-z0-9._~+/=ıİ-]{10,}",
             "Bearer [redacted]",
         ),
         (r"\bAKIA[0-9A-Z]{16}\b", "[redacted aws key]"),
@@ -364,6 +366,11 @@ mod tests {
         assert_eq!(redact("apı_key=abc123"), "apı_key=[redacted]");
         assert_eq!(redact("credentıal=hunter2"), "credentıal=[redacted]");
         assert_eq!(redact("authorızation: abc123"), "authorızation: [redacted]");
+        assert_eq!(redact("apİ_key=abc"), "apİ_key=[redacted]");
+        assert_eq!(redact("xıtoken=abc"), "xıtoken=[redacted]");
+        assert_eq!(redact("--ıpassword x"), "--ıpassword [redacted]");
+        assert_eq!(redact("--passwordı x"), "--passwordı [redacted]");
+        assert_eq!(redact("bearer abcdefghijkİſ@"), "Bearer [redacted]@");
     }
 
     // Describe
