@@ -57,4 +57,5 @@ just scrub     # scrub check
 - The gate runs code from the pull request itself (`ci/merge_gate.py` and the workflow file), as any required check does. A pull
   request could weaken it. `.github/CODEOWNERS` names the owner of `.github/` and `ci/`, but it only enforces review when the ruleset
   has "Require review from Code Owners" turned on.
-- Tool versions come from `flake.lock` (update with `nix flake update`); the action SHAs are updated by Renovate.
+- Tool versions come from `flake.lock`. Dependabot (`.github/dependabot.yml`) updates it weekly, as in the hoprnet repos; Renovate's nix
+  manager is off because it cannot compute the lock hashes. Renovate updates the action SHAs, the Cargo dependencies and the pinned tools.
