@@ -52,7 +52,7 @@ class Classify(unittest.TestCase):
 class Rust(unittest.TestCase):
     def test_rust_sources_and_manifests_run_the_rust_job(self):
         for path in ("crates/xmpp-agent-common/src/redact.rs", "build.rs", "Cargo.toml", "Cargo.lock", "crates/x/Cargo.toml", "rust-toolchain.toml",
-                     "rustfmt.toml", ".rustfmt.toml", "clippy.toml", ".cargo/config.toml"):
+                     "rustfmt.toml", ".rustfmt.toml", "clippy.toml", ".cargo/config.toml", "flake.nix", "flake.lock"):
             self.assertTrue(changes.classify(["README.md", path])["rust"], path)
 
     def test_a_change_without_rust_files_skips_the_rust_job(self):
@@ -60,7 +60,7 @@ class Rust(unittest.TestCase):
             self.assertFalse(changes.classify([path])["rust"], path)
 
     def test_lookalike_names_are_not_rust(self):
-        for path in ("docs/Cargo.toml.md", "src/rs", "notes.rs.txt", "src/mycargo.toml", "Cargo.toml.bak"):
+        for path in ("docs/Cargo.toml.md", "src/rs", "notes.rs.txt", "src/mycargo.toml", "Cargo.toml.bak", "docs/flake.nix.md"):
             self.assertFalse(changes.classify([path])["rust"], path)
 
     def test_an_unknown_diff_runs_the_rust_job(self):
