@@ -12,3 +12,8 @@ publish = false
 regex = "1"
 serde = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "sync", "fs"] }
+tokio-xmpp = { version = "6.0.0", default-features = false, features = ["direct-tls", "ring", "rustls-native-certs"] }
+xmpp-parsers = "0.23.0"
