@@ -264,7 +264,7 @@ mod text {
         let text = rejection_text(&rejected(Reason::Unknown, "zzz", &[])).expect("a reply");
         assert!(text.contains("/zzz") && text.contains("/help"), "{text}");
         let bare = rejection_text(&rejected(Reason::Unknown, "", &[])).expect("a reply");
-        assert!(bare.contains("/help"), "{bare}");
+        assert_eq!(bare, "Unknown command. Send /help for the commands.");
     }
 
     #[test]
