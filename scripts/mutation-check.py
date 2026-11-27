@@ -111,7 +111,7 @@ def run(module, label, old, new):
     if src.count(old) != 1:
         return f"BROKEN {label}: pattern found {src.count(old)} times"
     d = tempfile.mkdtemp()
-    shutil.copytree(ROOT, d, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", ".git", ".venv"))
+    shutil.copytree(ROOT, d, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", ".git", ".venv", "target", "work"))
     open(os.path.join(d, rel), "w").write(src.replace(old, new))
     subprocess.run(["git", "init", "-q", d], check=True)
     subprocess.run(["git", "-C", d, "add", "-A"], check=True, capture_output=True)  # the scrub tests scan tracked files
@@ -124,7 +124,7 @@ def run(module, label, old, new):
 def baseline():
     """The unmutated suite must pass, or every mutation would look caught."""
     d = tempfile.mkdtemp()
-    shutil.copytree(ROOT, d, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", ".git", ".venv"))
+    shutil.copytree(ROOT, d, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", ".git", ".venv", "target", "work"))
     subprocess.run(["git", "init", "-q", d], check=True)
     subprocess.run(["git", "-C", d, "add", "-A"], check=True, capture_output=True)
     r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", "."], cwd=d,

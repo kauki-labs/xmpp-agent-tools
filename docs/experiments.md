@@ -56,3 +56,33 @@ Not yet observed for ANY ACP server: a `session/request_permission` call, becaus
 ## Server facts (Prosody 13.0.6, throwaway server, two slixmpp clients)
 - MUC rooms are semi-anonymous by default: `muc_room_default_public_jids` is unset, so `whois` is `moderators`. The owner saw the participant's real JID; the participant saw `None` for the owner. With `muc_room_default_public_jids = true` both saw real JIDs. An approval design that identifies the answering person by JID needs that option (or a moderator client). Room defaults apply at room creation only.
 - `mod_http_openmetrics` serves `prosody_mod_c2s__connections`, `prosody_mod_muc__live_room` and room hit and miss counters (note the double underscore); with `openmetrics_allow_cidr` set and an empty IP list a loopback request was refused (HTTP 403) outside the CIDR and served inside it.
+
+## E16: a Rust client on tokio-xmpp against a real Prosody (2026-11-27)
+Question: can a client built on `tokio-xmpp` 6.0.0 and `xmpp-parsers` 0.23.0 do what the agent client needs? Setup: a throwaway
+Prosody 13.0.6 with direct TLS, a MUC with archive and a file-share component; a test CA handed over through `SSL_CERT_FILE`
+(no trust store is touched). The program is `experiments/e16` (200 lines, two clients); `experiments/e16/run.sh` builds the server
+config and runs everything from a clean state. Result: **9 of 9 checks pass**, exit code 0.
+
+| # | Check | Result |
+| - | ----- | ------ |
+| 1 | Direct TLS with a verified certificate, SASL, resource bind | PASS: `rustls-native-certs` honoured `SSL_CERT_FILE` on macOS |
+| 2a | Join a MUC and see one's own presence | PASS |
+| 2b | Accept the default room configuration (unlock a new room) | PASS, with a raw `minidom` element: there is no typed `muc#owner` query |
+| 3 | Read another participant's real JID from the room presence | PASS with `muc_room_default_public_jids = true` (typed `MucUser`) |
+| 4a | Send and receive a groupchat message | PASS |
+| 4b | Send and parse a message correction (XEP-0308) | PASS (typed `Replace`) |
+| 4c | Send and parse a reaction (XEP-0444) | PASS (typed `Reactions`) |
+| 5 | Query the room archive (XEP-0313) and page through it with RSM, two at a time | PASS: 7 messages over 4 pages; the body-less reaction is not archived |
+| 6 | Request an upload slot (XEP-0363), PUT a file, GET it back | PASS: status 201, bytes identical |
+
+Costs and findings:
+- Writing it took 14 compile errors, all from guessing API shapes, none from a missing feature: `DnsConfig::NoSrv` needs `resolver: None`,
+  the constructor takes `Timeouts`, `Iq` is an enum with inline fields, `Id` and `QueryId` are tuple structs, attribute names need
+  `NcName`. The crates are thinly documented, so reading their source is part of the job.
+- Server facts found on the way: the file-share routes are per host, so the component needs `http_host` or the PUT answers 404;
+  messages without a body are not archived by default.
+- Size: a release build is 8.5 MB (dynamic against system libraries on macOS); `Cargo.lock` lists 225 crates. Python with
+  `slixmpp` has far fewer dependencies but needs an interpreter.
+- **Not tested:** carbons, stream-management resumption and reconnection, chat states, history on join, large files, long-running
+  stability, the production Prosody build, and OMEMO (the Rust side has only legacy parsers and no crypto, so the OMEMO follow-up
+  would stay on Python or need a new crate).

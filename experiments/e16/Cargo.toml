@@ -1,0 +1,11 @@
+[package]
+name = "e16"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-xmpp = { version = "6.0.0", default-features = false, features = ["direct-tls", "ring", "rustls-native-certs"] }
+xmpp-parsers = "0.23.0"
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false }
