@@ -28,7 +28,7 @@ No dependency is needed to run the tests. Python 3.11 or newer.
 
 ## How it is checked
 
-Every pull request runs `.github/workflows/pr.yaml`. Its `merge-gate` job is the only required check: it is green when every other
+Every pull request runs `.github/workflows/pr.yaml` (see [docs/ci.md](docs/ci.md)). Its `merge-gate` job is the only required check: it is green when every other
 job is success or skipped. The design facts come from experiments, recorded in [docs/experiments.md](docs/experiments.md).
 See [AGENTS.md](AGENTS.md) for the rules the code follows.
 
