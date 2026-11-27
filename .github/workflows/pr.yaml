@@ -25,6 +25,7 @@ jobs:
     outputs:
       code: ${{ steps.classify.outputs.code }}
       workflows: ${{ steps.classify.outputs.workflows }}
+      rust: ${{ steps.classify.outputs.rust }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -78,6 +79,27 @@ jobs:
       - name: Every mutation must fail the tests
         run: python3 scripts/mutation-check.py
 
+  rust:
+    name: rust
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the toolchain pinned in rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Unit tests
+        run: cargo test --locked
+
   scrub:
     name: scrub
     runs-on: ubuntu-24.04
@@ -116,7 +138,7 @@ jobs:
 
   merge-gate:
     name: Merge gate
-    needs: [changes, tests, mutation, scrub, workflows]
+    needs: [changes, tests, mutation, rust, scrub, workflows]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
