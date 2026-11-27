@@ -10,5 +10,12 @@ publish = false
 
 [workspace.dependencies]
 regex = "1"
-serde = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+clap = { version = "4", features = ["derive"] }
+rmcp = { version = "3.12", features = ["server", "transport-io"] }
+tiny_http = "0.12"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+toml = "0.9"
+ureq = "3"
+rstest = { version = "0.29", default-features = false }
