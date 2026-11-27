@@ -69,6 +69,8 @@ pub enum Error {
     Timeout(&'static str),
     /// The client is gone or the session ended.
     Disconnected,
+    /// The server refused the login: a wrong password or an unknown account.
+    Auth(String),
     /// The server answered with an error.
     Server(String),
     /// The HTTP side of an upload failed.
@@ -82,6 +84,7 @@ impl fmt::Display for Error {
             Error::InvalidArgument(m) => write!(f, "invalid argument: {m}"),
             Error::Timeout(step) => write!(f, "timed out: {step}"),
             Error::Disconnected => write!(f, "disconnected"),
+            Error::Auth(m) => write!(f, "login refused: {m}"),
             Error::Server(m) => write!(f, "server error: {m}"),
             Error::Http(m) => write!(f, "http error: {m}"),
             Error::Io(e) => write!(f, "io error: {e}"),

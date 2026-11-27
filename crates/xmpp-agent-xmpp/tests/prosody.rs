@@ -6,6 +6,8 @@ use std::fs;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::Receiver;
@@ -87,6 +89,20 @@ fn make_pki(dir: &Path) {
     ]);
 }
 
+/// One CA for every test in this process: `SSL_CERT_FILE` is process-wide, so it is set once, here. The throwaway CA is the
+/// only trust root the process needs; no system store is touched.
+fn shared_pki() -> &'static Path {
+    static PKI: OnceLock<PathBuf> = OnceLock::new();
+    PKI.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("xat-pki-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        make_pki(&dir);
+        unsafe { std::env::set_var("SSL_CERT_FILE", dir.join("ca.pem")) };
+        dir
+    })
+}
+
 fn prosody_config(dir: &Path, c2s: u16, http: u16, smacks: bool) -> String {
     let d = dir.display();
     let smacks = if smacks { r#""smacks"; "# } else { "" };
@@ -133,10 +149,15 @@ struct Server {
 
 impl Server {
     fn new(bin: PathBuf) -> Server {
-        let dir = std::env::temp_dir().join(format!("xat-prosody-{}", std::process::id()));
+        static COUNT: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNT.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("xat-prosody-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("data")).unwrap();
-        make_pki(&dir);
+        let pki = shared_pki();
+        for f in ["srv.key", "srv.pem"] {
+            fs::copy(pki.join(f), dir.join(f)).unwrap();
+        }
         let (c2s, http) = (free_port(), free_port());
         let mut server = Server {
             bin,
@@ -237,19 +258,25 @@ async fn connect(c2s: u16, user: &str) -> (XmppClient, Receiver<Event>) {
         .unwrap_or_else(|e| panic!("connect {user}: {e}"))
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn against_a_real_prosody() {
+/// A started server with `alice` and `bob`, or `None` (the test is skipped) without `XAT_TEST_PROSODY_BIN`.
+fn new_server() -> Option<Server> {
     let Some(bin) = std::env::var_os("XAT_TEST_PROSODY_BIN") else {
         eprintln!("skipped: XAT_TEST_PROSODY_BIN is not set");
-        return;
+        return None;
     };
     let mut server = Server::new(PathBuf::from(bin));
-    // the throwaway CA is the only trust root this process needs; no system store is touched
-    unsafe { std::env::set_var("SSL_CERT_FILE", server.dir.join("ca.pem")) };
     for u in ["alice", "bob"] {
         server.ctl(&["register", u, "localhost", &format!("pw-{u}")]);
     }
     server.start();
+    Some(server)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn against_a_real_prosody() {
+    let Some(mut server) = new_server() else {
+        return;
+    };
 
     // 1. a verified TLS connection, SASL and bind
     let (alice, mut alice_rx) = connect(server.c2s, "alice").await;
@@ -403,10 +430,8 @@ async fn against_a_real_prosody() {
     pass("upload slot, PUT and GET round trip");
 
     // 7. reconnect: kill the server, bring it back; the streams retry with a growing delay, so allow a while
-    // Stream management is off after the restart. With it on, Prosody answers a resumption of the lost session with a
-    // `<failed/>` that has no `h` attribute, which xmpp-parsers 0.23 refuses to parse, and the reconnect never completes.
+    // stream management stays on, as in production: the old session is gone, so the resumption must fail cleanly
     server.stop();
-    server.configure(false);
     expect(&mut alice_rx, 20, "reconnecting", |e| {
         matches!(e, Event::Reconnecting).then_some(())
     })
@@ -438,8 +463,97 @@ async fn against_a_real_prosody() {
         matches!(e, Event::Groupchat { body, .. } if body == "room after the restart").then_some(())
     })
     .await;
-    pass("reconnect: Reconnecting, Reconnected, a later send works, rooms rejoined");
+    pass(
+        "reconnect with stream management on: Reconnecting, Reconnected, a later send works, rooms rejoined",
+    );
 
     alice.disconnect().await;
     bob.disconnect().await;
+}
+
+/// A TCP relay in front of the server that can cut every open connection while the server keeps running, which is a network
+/// drop: the server still holds the stream-management session.
+struct Proxy {
+    port: u16,
+    conns: std::sync::Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+}
+
+impl Proxy {
+    async fn start(upstream: u16) -> Proxy {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let conns = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let held = conns.clone();
+        tokio::spawn(async move {
+            while let Ok((mut down, _)) = listener.accept().await {
+                let task = tokio::spawn(async move {
+                    if let Ok(mut up) =
+                        tokio::net::TcpStream::connect(("127.0.0.1", upstream)).await
+                    {
+                        let _ = tokio::io::copy_bidirectional(&mut down, &mut up).await;
+                    }
+                });
+                held.lock().unwrap().push(task);
+            }
+        });
+        Proxy { port, conns }
+    }
+
+    /// Drop every connection now; new ones are accepted again.
+    fn cut(&self) {
+        for task in self.conns.lock().unwrap().drain(..) {
+            task.abort();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_connection_resumes_the_session() {
+    let Some(server) = new_server() else { return };
+    let proxy = Proxy::start(server.c2s).await;
+    let (alice, mut alice_rx) = connect(proxy.port, "alice").await;
+    let (bob, _bob_rx) = connect(server.c2s, "bob").await;
+    alice.join_room(ROOM, "alice").await.unwrap();
+
+    proxy.cut();
+    // sent while alice is away: stream management holds it for her
+    bob.send_chat("alice@localhost", "while you were away")
+        .await
+        .unwrap();
+    expect(&mut alice_rx, 30, "reconnecting", |e| {
+        matches!(e, Event::Reconnecting).then_some(())
+    })
+    .await;
+    expect(&mut alice_rx, 60, "reconnected", |e| {
+        matches!(e, Event::Reconnected).then_some(())
+    })
+    .await;
+    expect(&mut alice_rx, 10, "the message sent during the drop", |e| {
+        matches!(e, Event::Chat { body, .. } if body == "while you were away").then_some(())
+    })
+    .await;
+    alice.send_chat("bob@localhost", "back").await.unwrap();
+    pass("a cut connection resumes with stream management on");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wrong_password_fails_fast() {
+    let Some(server) = new_server() else { return };
+    let cfg = Config {
+        jid: "alice@localhost".into(),
+        password: "not the password".into(),
+        server: Some(("localhost".into(), server.c2s)),
+    };
+    let started = Instant::now();
+    let err = XmppClient::connect(cfg)
+        .await
+        .err()
+        .expect("a wrong password must not connect");
+    assert!(matches!(err, xmpp_agent_xmpp::Error::Auth(_)), "{err:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "took {:?}",
+        started.elapsed()
+    );
+    pass("a wrong password is refused quickly with Error::Auth");
 }
