@@ -17,3 +17,4 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-
 tokio = { version = "1", features = ["rt", "macros", "time", "sync", "fs"] }
 tokio-xmpp = { version = "6.0.0", default-features = false, features = ["direct-tls", "ring", "rustls-native-certs"] }
 xmpp-parsers = "0.23.0"
+sasl = "0.5"

@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 futures.workspace = true
 reqwest.workspace = true
+sasl.workspace = true
 tokio.workspace = true
 tokio-xmpp.workspace = true
 xmpp-parsers.workspace = true

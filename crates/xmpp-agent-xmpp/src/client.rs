@@ -23,6 +23,7 @@ use xmpp_parsers::iq::Iq;
 use xmpp_parsers::jid::Jid;
 use xmpp_parsers::message::Message;
 
+use crate::login;
 use crate::stanza::{self, Parser};
 use crate::{Archived, Error, Event};
 
@@ -105,13 +106,17 @@ impl XmppClient {
             },
             None => DnsConfig::srv_xmpps(jid.domain().as_ref()),
         };
-        let stream = StanzaStream::new_c2s(
+        let unconfirmed = login::Unconfirmed::default();
+        let (fatal_tx, fatal) = mpsc::unbounded_channel();
+        let connector = login::connector(
             DirectTlsServerConnector::from(dns),
             jid,
             cfg.password,
             Timeouts::default(),
-            32,
+            unconfirmed.clone(),
+            fatal_tx,
         );
+        let stream = StanzaStream::new(connector, 32);
         let (events, events_rx) = mpsc::channel(256);
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let (ready_tx, ready_rx) = oneshot::channel();
@@ -124,14 +129,16 @@ impl XmppClient {
             rooms: HashMap::new(),
             own_bare: String::new(),
             ready: Some(ready_tx),
+            unconfirmed,
         };
-        tokio::spawn(actor.run(cmd_rx));
-        // A wrong password or an unreachable server retries forever inside the stream; the timeout is what reports it.
+        tokio::spawn(actor.run(cmd_rx, fatal));
+        // A refused login is reported at once; an unreachable server or an untrusted certificate retries, and the timeout reports it.
         match timeout(CONNECT_TIMEOUT, ready_rx).await {
-            Ok(Ok(())) => Ok((XmppClient { tx: cmd_tx }, events_rx)),
+            Ok(Ok(Ok(()))) => Ok((XmppClient { tx: cmd_tx }, events_rx)),
+            Ok(Ok(Err(e))) => Err(e),
             Ok(Err(_)) => Err(Error::Disconnected),
             Err(_) => Err(Error::Timeout(
-                "connect (bad credentials, an untrusted certificate or an unreachable server)",
+                "connect (an untrusted certificate or an unreachable server)",
             )),
         }
     }
@@ -329,7 +336,9 @@ struct Actor {
     rooms: HashMap<String, String>,
     own_bare: String,
     /// Answered by the first session; `None` afterwards, which is how a later session is told from the first.
-    ready: Option<oneshot::Sender<()>>,
+    ready: Option<Reply<()>>,
+    /// Shared with the connector: cleared once a session is up.
+    unconfirmed: login::Unconfirmed,
 }
 
 fn iq_id(iq: &Iq) -> String {
@@ -341,7 +350,11 @@ fn iq_id(iq: &Iq) -> String {
 }
 
 impl Actor {
-    async fn run(mut self, mut cmds: mpsc::Receiver<Cmd>) {
+    async fn run(
+        mut self,
+        mut cmds: mpsc::Receiver<Cmd>,
+        mut fatal: mpsc::UnboundedReceiver<tokio_xmpp::Error>,
+    ) {
         let mut done = None;
         loop {
             tokio::select! {
@@ -350,6 +363,14 @@ impl Actor {
                     Some(Cmd::Disconnect(d)) => { done = Some(d); break }
                     Some(cmd) => self.command(cmd).await,
                 },
+                Some(err) = fatal.recv() => {
+                    let err = Error::Auth(err.to_string());
+                    match self.ready.take() {
+                        Some(ready) => { let _ = ready.send(Err(err)); }
+                        None => self.emit(Event::Disconnected(err.to_string())).await,
+                    }
+                    break;
+                }
                 item = self.stream.next() => match item {
                     None => break,
                     Some(item) => self.item(item).await,
@@ -357,7 +378,9 @@ impl Actor {
             }
         }
         let _ = timeout(Duration::from_secs(3), self.stream.close()).await;
-        let _ = self.events.send(Event::Disconnected("closed".into())).await;
+        if self.ready.is_none() {
+            let _ = self.events.send(Event::Disconnected("closed".into())).await;
+        }
         if let Some(d) = done {
             let _ = d.send(());
         }
@@ -418,9 +441,10 @@ impl Actor {
                         self.queue(Stanza::Presence(p)).await;
                     }
                 }
+                self.unconfirmed.store(false, Ordering::SeqCst);
                 match self.ready.take() {
                     Some(ready) => {
-                        let _ = ready.send(());
+                        let _ = ready.send(Ok(()));
                     }
                     None => self.emit(Event::Reconnected).await,
                 }
@@ -430,7 +454,10 @@ impl Actor {
                     self.emit(Event::Reconnecting).await;
                 }
             }
-            StreamItem::Stream(StreamEvent::Resumed) => self.emit(Event::Reconnected).await,
+            StreamItem::Stream(StreamEvent::Resumed) => {
+                self.unconfirmed.store(false, Ordering::SeqCst);
+                self.emit(Event::Reconnected).await
+            }
             StreamItem::Stanza(Stanza::Iq(iq)) => self.iq(iq).await,
             StreamItem::Stanza(Stanza::Message(m)) => {
                 if let Some((queryid, entry)) = stanza::mam_result(&m) {

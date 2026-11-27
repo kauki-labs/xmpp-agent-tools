@@ -5,6 +5,7 @@
 //! stream retries with a growing delay, [`Event::Reconnected`] follows each new session, and the rooms are joined again.
 
 mod client;
+mod login;
 pub mod stanza;
 
 use std::fmt;
